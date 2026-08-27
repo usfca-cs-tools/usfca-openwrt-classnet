@@ -89,7 +89,8 @@ if ssh "$HOST" 'test -f /etc/classnet/classnet.conf' 2>/dev/null; then
 fi
 ssh "$HOST" 'rm -rf /tmp/classnet-stage && mkdir -p /tmp/classnet-stage'
 PUSH=(etc/classnet usr/sbin/classnet usr/sbin/classnet-presence usr/sbin/classnet-schedule
-      etc/init.d/classnet-portal tests/policy-simtest.sh tests/portal-simtest.sh)
+      etc/init.d/classnet-portal etc/hotplug.d/ntp/25-classnet
+      tests/policy-simtest.sh tests/portal-simtest.sh)
 [ -x "$HERE/usr/sbin/classnet-portal" ] && PUSH+=(usr/sbin/classnet-portal)
 COPYFILE_DISABLE=1 tar -C "$HERE" --exclude='.*' -cf - "${PUSH[@]}" \
   | ssh "$HOST" 'tar -C /tmp/classnet-stage -xf -'
@@ -129,6 +130,10 @@ ssh "$HOST" 'set -e
     cp /tmp/classnet-stage/etc/init.d/classnet-portal /etc/init.d/
     chmod +x /etc/init.d/classnet-portal
   fi
+  if [ -f /tmp/classnet-stage/etc/hotplug.d/ntp/25-classnet ]; then
+    mkdir -p /etc/hotplug.d/ntp
+    cp /tmp/classnet-stage/etc/hotplug.d/ntp/25-classnet /etc/hotplug.d/ntp/
+  fi
   # portal.conf holds the OAuth secret and is filled in by hand -- never clobber
   [ -f /etc/classnet/portal.conf ] || cp /etc/classnet/portal.conf.example /etc/classnet/portal.conf 2>/dev/null || true
   for t in policy-simtest:classnet-simtest portal-simtest:classnet-portaltest; do
@@ -150,6 +155,24 @@ ssh "$HOST" 'set -e
   /etc/init.d/cron enable >/dev/null 2>&1 || true
   /etc/init.d/cron restart >/dev/null 2>&1 || true
   echo "  $(grep -c "/usr/sbin/classnet-" "$C") classnet cron entries, cron $(/etc/init.d/cron status 2>&1 | head -1)"'
+
+say "Clock"
+# The schedule reads the wall clock and the board has no RTC, so classnet-schedule
+# holds until ntpd confirms the time. On an already-running router that stratum
+# event fired long ago, so seed the flag here -- but only on evidence: compare
+# the router against this machine, which has a real clock, rather than assuming.
+ssh "$HOST" "test -f /var/state/classnet-clock" 2>/dev/null && echo "  clock already confirmed" || {
+  R_NOW=$(ssh "$HOST" 'date +%s' 2>/dev/null || echo 0)
+  L_NOW=$(date +%s)
+  SKEW=$(( R_NOW > L_NOW ? R_NOW - L_NOW : L_NOW - R_NOW ))
+  if [ "$R_NOW" != 0 ] && [ "$SKEW" -le 120 ]; then
+    ssh "$HOST" 'mkdir -p /var/state && echo "seeded by install.sh" > /var/state/classnet-clock'
+    echo "  router clock agrees with this machine (${SKEW}s) -- schedule may act"
+  else
+    echo "  router clock is ${SKEW}s from this machine -- leaving the schedule held"
+    echo "  until ntpd confirms it (classnet-schedule will not touch the SSID)"
+  fi
+}
 
 say "Timezone"
 # The schedule is written in local wall-clock time, so the router has to agree

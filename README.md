@@ -275,6 +275,31 @@ classnet session end                  # both close together
 within the minute, so it will be undone; the command says so when it runs. To
 hold the network open outside the timetable, start a session.
 
+**If the router reboots mid-class** — a power cut is the case that matters —
+it comes back with the SSID in the state it was left in, so a class that was
+running is running again as soon as the radios are up. What it will *not* do is
+immediately start deciding, and that is deliberate: these boards have no RTC,
+and at boot `sysfixtime` restores the clock from the newest mtime under `/etc`,
+so the router believes it is whenever it last wrote a file — stale by exactly
+the length of the outage. A timetable read off that clock could take the SSID
+down in the middle of the period it just came back for.
+
+So the schedule holds until `ntpd` confirms the time, and acts the moment it
+does. That is the same gate `dnsmasq` uses before it will trust a DNSSEC
+signature (`/etc/hotplug.d/ntp/25-dnsmasqsec`, next to ours). Holding means
+leaving the SSID exactly as the reboot left it, which for an outage during
+class is the state the room wants anyway. The wait is announced once per boot:
+
+```
+classnet: schedule: waiting for ntpd before touching cs245 (no RTC on this board)
+classnet: clock confirmed by ntpd -- schedule is live
+```
+
+If the outage also took your uplink down, `ntpd` cannot sync and the schedule
+stays held until it can — the network keeps whatever state it had rather than
+guessing. `classnet schedule` reports the hold, so it is visible rather than
+mysterious.
+
 The windows come from `classnet session windows`, which is the same
 `sessions_for` the attendance report is built on — one source, so the network
 cannot be open at a time that would not be counted, or shut during a time that
@@ -508,6 +533,7 @@ etc/classnet/attendance/       one append-only log per day
 usr/sbin/classnet              the CLI
 usr/sbin/classnet-presence     one attendance sample, per minute from cron
 usr/sbin/classnet-schedule     opens and closes the SSID on the timetable, per minute
+etc/hotplug.d/ntp/25-classnet  holds the schedule until ntpd confirms the clock
 portal/                        the sign-in portal (Rust, no dependencies)
 bin/classnet-release           push a git release into selected students' repos
 tests/                         two end-to-end suites

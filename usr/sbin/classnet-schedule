@@ -34,6 +34,29 @@ if [ ! -f "$FLAG_SCHED" ]; then
 	exit 0
 fi
 
+# No RTC on these boards. At boot sysfixtime restores the clock from the newest
+# mtime under /etc, so after a power cut the router believes it is whenever it
+# last wrote a file. Deciding a timetable from that can close the SSID in the
+# middle of a class or open it at 3am, so hold everything until ntpd confirms
+# the time -- see etc/hotplug.d/ntp/25-classnet, which also re-runs this the
+# moment it does. Holding means leaving the SSID exactly as the reboot left it,
+# which for an outage during class is the state the room wants anyway.
+CLOCK=/var/state/classnet-clock
+if [ ! -f "$CLOCK" ]; then
+	if [ "$DRY" = 1 ]; then
+		echo "  clock not confirmed by ntpd yet -- holding $SSID as it is"
+		exit 0
+	fi
+	# Once per boot, not once per minute: the marker shares tmpfs with the flag
+	# it is waiting for, so both vanish together on the next boot.
+	if [ ! -f "$CLOCK-warned" ]; then
+		mkdir -p /var/state
+		: > "$CLOCK-warned"
+		logger -t classnet "schedule: waiting for ntpd before touching $SSID (no RTC on this board)"
+	fi
+	exit 0
+fi
+
 now=$(date +%s)
 want=down
 open=""
