@@ -15,6 +15,96 @@ router ──────────┤
                  └── SSID "cs245-staff"  → full Internet, no sign-in
 ```
 
+## What a student does
+
+**Once, on each laptop they bring.** They join the class Wi-Fi and a sign-in
+sheet opens by itself. They sign in with their university Google account,
+approving a short code — on the laptop, or on their phone, whichever is easier.
+That is the whole thing, and it takes about thirty seconds.
+
+```
+ ┌──────────────────────────────┐
+ │  CS 245 sign-in              │
+ │                              │
+ │  1. Go to google.com/device  │
+ │  2. Enter this code:         │
+ │                              │
+ │      ┌────────────────┐      │
+ │      │  WTR-QRL-JBQQ  │      │
+ │      └────────────────┘      │
+ └──────────────────────────────┘
+```
+
+**Every session after that: nothing.** They open their laptop, it joins, and it
+is recognised. No command to run, no page to visit, no code to type. Their
+laptop's address is bound to them and stays bound.
+
+While they are on it, the network reaches what you allowed and nothing else. A
+blocked name fails immediately with "server not found" rather than hanging, so
+it reads as a closed door rather than a broken connection.
+
+If they are not on your roster, they are told so by name and sent to you —
+they are never asked to type their own GitHub username, because a typo there
+binds the wrong identity and does not surface until something silently goes to
+the wrong place weeks later.
+
+## What the instructor and TAs do
+
+**Before the term.** Drop in a roster mapping people to GitHub usernames (a
+Google Forms export works unchanged) and, optionally, a class list (a Canvas
+gradebook export works unchanged). Then:
+
+```sh
+$ classnet roster check
+  ok         jsmith@example.edu               -> jsmith
+  MALFORMED  alopez@example.edu               -> "Ana Lopez"  (expected a bare username)
+  NOT FOUND  rpatel@example.edu               -> rpatel-typo
+
+Cross-checking 30 enrolled against the roster
+
+  MISSING    kwong                             Wong, Kim
+
+28 of 30 enrolled have a GitHub username on file
+```
+
+That is the whole point of the check: you fix those four rows at your desk
+instead of discovering them one student at a time at 2:15 on a Thursday.
+
+**Staff never sign in.** You join `cs245-staff`, which is a separate network
+with a separate password and unrestricted access. Nothing about the student
+network's rules applies to you. (A staff laptop that has to be on the student
+SSID can be allowlisted by MAC instead.)
+
+**During a session**, the two things you actually want to know:
+
+```sh
+$ classnet who
+  9a:71:c4:0e:2d:88  0:42   usf_user=jsmith  email=jsmith@example.edu  name=Jane Smith  github=jsmith
+  4e:22:81:aa:19:03  0:11   usf_user=alopez  email=alopez@example.edu  name=Ana Lopez   github=a-lopez
+  aa:bb:cc:dd:ee:ff  0:03   (unregistered -- has not signed in)
+
+$ classnet attendance
+  GITHUB           FIRST   LAST    TOTAL
+  jsmith           14:02   15:44   1:42
+  alopez           14:31   15:44   1:11
+```
+
+Attendance is derived from the access point's own association table, so it
+costs a student nothing and cannot be forgotten. A closed lid or a roam between
+radios is stitched back into one visit rather than reported as two.
+
+**When something is wrong mid-class**, three escape hatches, in increasing
+order of bluntness:
+
+```sh
+classnet debug on   # then `classnet log` names the exact host being refused
+classnet unlock     # suspend the allowlist without dropping anyone off the network
+classnet disable    # take the student SSID down entirely
+```
+
+`classnet register <mac> <email> <github>` registers by hand a laptop that
+cannot get through the portal. Keep it within reach for the first session.
+
 ## What it actually does
 
 **Default-deny by hostname, not by IP range.** A dedicated `dnsmasq` instance on
@@ -54,8 +144,8 @@ browser tab, no ping.
 ## Install
 
 ```sh
-git clone https://github.com/usfca-cs-tools/usfcs-openwrt-manager
-cd usfcs-openwrt-manager
+git clone https://github.com/usfca-cs-tools/usfca-openwrt-classnet
+cd usfca-openwrt-classnet
 cp etc/classnet/classnet.conf.example etc/classnet/classnet.conf
 $EDITOR etc/classnet/classnet.conf        # CLASS, SSIDs, passphrases
 TARGET=aarch64-unknown-linux-musl ./portal/build.sh
