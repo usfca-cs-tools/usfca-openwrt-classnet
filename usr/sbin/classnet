@@ -804,7 +804,7 @@ cmd_profile() {
 cmd_test() {
 	rc=0
 	echo "== on-router checks =="
-	dnsmasq --test -C /var/etc/dnsmasq.conf.classnet >/dev/null 2>&1 \
+	dnsmasq --test -C /var/etc/dnsmasq.conf.$C >/dev/null 2>&1 \
 		&& echo "  ok   classnet dnsmasq config parses" \
 		|| { echo "  FAIL classnet dnsmasq config"; rc=1; }
 	fw4 check >/dev/null 2>&1 \
@@ -835,11 +835,17 @@ cmd_test() {
 
 	echo "== resolver behaviour (asking $CLASS_IP directly) =="
 	_q()  { nslookup "$1" "$CLASS_IP" 2>/dev/null | sed -n '/^Name:/,$p' | grep -c '^Address'; }
-	for d in github.com usfca-cs-tools.github.io "${ONLINE_HOST:-}" "$PORTAL_HOST"; do
+	# Read the course site out of the profile that defines it rather than
+	# naming one here: a hardcoded host silently becomes a permanent FAIL for
+	# everyone whose site is not ours.
+	site=$(strip "$ALLOW_DIR"/*-site.list 2>/dev/null | head -1)
+	for d in github.com "$site" "${ONLINE_HOST:-}" "$PORTAL_HOST"; do
 		[ -n "$d" ] || continue
 		[ "$(_q "$d")" -gt 0 ] && echo "  ok   $d resolves" || { echo "  FAIL $d should resolve"; rc=1; }
 	done
-	for d in chatgpt.com api.githubcopilot.com api.anthropic.com doc.rust-lang.org; do
+	# These must stay out of every profile in allow.d, or this arm contradicts
+	# policy-simtest, which asserts the allowed side of the same policy.
+	for d in chatgpt.com api.githubcopilot.com api.anthropic.com docs.rs; do
 		[ "$(_q "$d")" -eq 0 ] && echo "  ok   $d refused" || { echo "  FAIL $d should NOT resolve"; rc=1; }
 	done
 	[ $rc = 0 ] && echo "ALL PASS" || echo "FAILURES -- see above"

@@ -108,7 +108,10 @@ ssh "$HOST" 'set -e
     echo "  (start from etc/classnet/schedule.conf.example)"
   fi
   cp "$S/classnet.conf" /etc/classnet/classnet.conf
-  n=$(grep -cE "^[0-9a-fA-F][0-9a-fA-F]:" /etc/classnet/staff-macs.list 2>/dev/null || echo 0)
+  # `|| true`, not `|| echo 0`: grep -c exits 1 on a count of zero, having
+  # already printed its own 0, so the fallback made $n two lines and the
+  # test below died with "bad number".
+  n=$(grep -cE "^[0-9a-fA-F][0-9a-fA-F]:" /etc/classnet/staff-macs.list 2>/dev/null || true)
   if [ "${n:-0}" -gt 0 ]; then
     echo "keeping staff-macs.list ($n MACs)"
   else
