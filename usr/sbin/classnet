@@ -1155,8 +1155,11 @@ cmd_gate() {
 	     echo "they register. Manual override: classnet register <mac> <email> <gh>" ;;
 	off) rm -f "$FLAG_GATE"; cmd_apply >/dev/null
 	     echo "registration gate OFF -- every device on classnet gets the allowlist" ;;
-	*)   gate_on && echo "registration gate is ON" || echo "registration gate is OFF"
-	     echo "usage: classnet gate on|off" ;;
+	# No argument is a question, not a mistake. install.sh calls it bare to
+	# report state, and ending a clean install on a usage line reads as though
+	# something went wrong.
+	"")  gate_on && echo "registration gate is ON" || echo "registration gate is OFF" ;;
+	*)   die "usage: classnet gate on|off" ;;
 	esac
 }
 
