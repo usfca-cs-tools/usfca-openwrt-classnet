@@ -22,3 +22,28 @@ www.google.com
 # the reliable path when a laptop browser misbehaves.
 www.gstatic.com
 ssl.gstatic.com
+
+# ---------------------------------------------------------------------------
+# YOUR INSTITUTION'S SINGLE SIGN-ON. Edit this part.
+#
+# A university Google account is usually federated: picking it at Google
+# redirects to your own identity provider, and if that host is not reachable
+# the student lands on "Safari can't find the server" holding a URL a mile
+# long. Google's own hosts are not enough.
+#
+# Find yours by signing in once and watching the address bar, or run
+# `classnet debug on`, attempt a sign-in, then `classnet log` -- it names every
+# host that was refused.
+#
+# The whole institution domain, not one host, because the chain hops: Google
+# sends you to idp.usfca.edu (Shibboleth), which hands off to usfcas.usfca.edu
+# (CAS), which may hand off again. Chasing each hop means a student stranded on
+# "Safari can't find the server" every time one changes.
+#
+# The cost: a not-yet-registered device can reach the university's own web
+# pages. Registered devices cannot -- the garden is pre-auth only.
+usfca.edu
+
+# Multi-factor. Duo is the common pairing with a Shibboleth IdP; the per-tenant
+# API host is a subdomain, which this covers.
+duosecurity.com

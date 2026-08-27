@@ -36,6 +36,9 @@ struct Config {
     domain: String,
     port: u16,
     listen: String,
+    /// Mirrors CAPTIVE_POPUP. With the pop-up on, macOS will not let the
+    /// student's own browser out, so telling them to use it is bad advice.
+    popup: bool,
     /// The course code. Names the nftables set this unblocks, and must match
     /// what the `classnet` CLI generated -- they are two halves of one system.
     class: String,
@@ -62,6 +65,7 @@ fn load_config() -> Config {
     }
     }
     let class = m.remove("CLASS").unwrap_or_else(|| "class".into());
+    let popup = m.remove("CAPTIVE_POPUP").as_deref() == Some("1");
     let net = m.remove("NET").unwrap_or_else(|| "192.168.63".into());
     Config {
         client_id: m.remove("GOOGLE_CLIENT_ID").unwrap_or_default(),
@@ -70,6 +74,7 @@ fn load_config() -> Config {
         port: m.remove("PORTAL_PORT").and_then(|s| s.parse().ok()).unwrap_or(8080),
         listen: m.remove("PORTAL_LISTEN").unwrap_or_else(|| format!("{net}.1")),
         class,
+        popup,
     }
 }
 
@@ -549,16 +554,34 @@ them a moment and you do not need to do anything else.</p>\
         "<p class=lead>Sign in with your <b>USF</b> account to join the class \
 network. Once per laptop, about thirty seconds.</p>\
 <span class=code>{}</span>\
-<a class=btn href='{}' target=_blank rel=noopener>Sign in with Google &rarr;</a>\
-<p class=muted>Google opens in a new tab and asks for that code. This tab \
-stays put, so switch back if you need to read it again.</p>\
-<p class=muted><b>No account to choose from?</b> You are in the Wi-Fi pop-up \
-window, which has no Google session. Open <b>Safari</b> or <b>Chrome</b> and go \
-to <b>{}</b> &mdash; this same page &mdash; and press the button there.</p>\
+<a class=btn href='{}'{}>Sign in with Google &rarr;</a>\
+<p class=muted>Google asks for the code <b>first</b>, and only then which \
+account to use &mdash; so enter the code above, press <b>Continue</b>, and \
+choose your account on the next screen.</p>\
+{}\
 <script>setInterval(async()=>{{try{{const r=await fetch('/status');\
 const j=await r.json();if(j.state==='done'||j.state==='problem')location.reload();}}\
 catch(e){{}}}},{}000);</script>",
-        esc(&p.user_code), esc(&p.verify_url), esc(&cfg.listen), p.interval.max(3));
+        esc(&p.user_code), esc(&p.verify_url),
+        // The captive sheet cannot open a second window, so target=_blank is
+        // inert there and the button simply does nothing. Navigate in place
+        // instead; the code is lost from view, which is one more reason the
+        // pop-up is not the default.
+        if cfg.popup { "" } else { " target=_blank rel=noopener" },
+        if cfg.popup {
+            // The pop-up is on, so macOS has flagged the network captive and
+            // will not let the student's own browser out. Everything has to
+            // happen in this window, including the password.
+            "<p class=muted>Sign in <b>in this window</b>. It has no saved \
+Google session, so you will be asked for your username and password rather \
+than shown an account to pick.</p>".to_string()
+        } else {
+            format!("<p class=muted><b>No account to choose from?</b> You are in \
+the Wi-Fi pop-up window, which has no Google session. Open <b>Safari</b> or \
+<b>Chrome</b> and go to <b>{}</b> &mdash; this same page &mdash; and press the \
+button there.</p>", esc(&cfg.listen))
+        },
+        p.interval.max(3));
     respond(s, "200 OK", "text/html", &page("CS 326 sign-in", &html));
 }
 

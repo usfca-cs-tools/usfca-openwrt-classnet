@@ -49,8 +49,11 @@ are told the router's address instead:
 Join cs245, then open http://192.168.63.1 in your browser
 ```
 
-Set `CAPTIVE_POPUP="1"` to trade back: the sheet appears on its own, and macOS
-users hit the wall above.
+`CAPTIVE_POPUP="1"` trades back, and both were tried on real hardware before
+choosing. With the pop-up on, macOS users must complete sign-in inside the
+sheet, which has no saved Google session — a full username, password and MFA on
+every device — and cannot open a second window, so the sign-in link does
+nothing and the code vanishes when followed. Auto-discovery is not worth that.
 
 The exchange with Google runs on the router, not in the page, so a student who
 closes the sheet or wanders off mid-sign-in is still let through the moment they

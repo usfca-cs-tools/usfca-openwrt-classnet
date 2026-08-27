@@ -48,11 +48,17 @@ PROFILES="rust docs cdn"
 # 1 redirects unregistered devices' plain HTTP to the portal, so the Wi-Fi
 # sign-in sheet opens by itself.
 #
-# It defaults to 0 because on macOS that redirect also catches the OS
-# connectivity probe: the system then flags the network captive and refuses to
-# let Safari reach the sign-in host, so the pop-up appears and sign-in cannot
-# be completed from it. With 0 there is no pop-up, and students are told to
-# open the router's address in their browser.
+# It defaults to 0, and that default was arrived at by testing both. With 1 on
+# macOS the redirect also catches the OS connectivity probe; the system flags
+# the network captive and then refuses to let Safari out, so the only place
+# left to sign in is the pop-up itself -- which has no saved Google session
+# (a full username, password and MFA, on every device) and cannot open a
+# second window, so the sign-in link is inert and the code disappears the
+# moment you follow it.
+#
+# With 0 there is no pop-up, and students are told one line instead:
+#   "Join the class Wi-Fi, then open http://<router-ip> in your browser."
+# There they are already signed in to Google, and it is an account picker.
 CAPTIVE_POPUP="0"
 
 # ---- Sessions and attendance ----------------------------------------------
