@@ -217,9 +217,22 @@ own window on demand:
 
 ```sh
 classnet session start office-hours
-...
+classnet session start --until 15:30 office-hours   # closes itself
 classnet session end
 classnet session status
+```
+
+Without `--until` a session runs until you end it, and nothing ends it for you:
+it is reported as running up to *now*, so a forgotten one becomes a
+twenty-hour window with everyone who passed the router in it. Give it an end
+time and it closes itself; `session end` still closes it sooner.
+
+Whatever happens, a session left open is closed at the end of the day it
+started on, and the close is logged rather than silent — the network was not a
+class after midnight whatever the file says:
+
+```
+classnet: session: 'office-hours' was left open on 2026-08-26 -- closed at the end of that day
 ```
 
 These times are the router's **local** wall clock, so `install.sh` sets its
@@ -270,6 +283,12 @@ well as the attendance window, immediately rather than at the next tick:
 classnet session start office-hours   # SSID up, attendance recording
 classnet session end                  # both close together
 ```
+
+An open session holds the SSID up for as long as it runs, so
+`--until` is worth the habit here: without it the network stays up all evening
+until the day-boundary close. Ending a session while a scheduled period is
+running does not drop the room — the scheduler re-checks, finds the period, and
+leaves the network up.
 
 `classnet enable` still works while a schedule is armed, but the cron re-decides
 within the minute, so it will be undone; the command says so when it runs. To

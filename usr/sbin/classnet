@@ -1125,25 +1125,51 @@ cmd_export() {
 cmd_session() {
 	mkdir -p "$ATTEND"
 	[ -f "$ADHOC" ] || printf '# start_unix end_unix name\n' > "$ADHOC"
-	open=$(awk '!/^#/ && NF>=3 && $2==0 {print $1"\t"$3; exit}' "$ADHOC" 2>/dev/null)
+	now=$(date +%s)
+	# Running means either still open (end 0) or ending later. A --until
+	# session is not open in the end-0 sense but is very much still running,
+	# and `end` and `status` both have to see it.
+	open=$(awk -v now="$now" '!/^#/ && NF>=3 && ($2==0 || $2>now) {print $1"\t"$3"\t"$2; exit}' "$ADHOC" 2>/dev/null)
 	case "${1:-status}" in
 	start)
-		[ -z "$open" ] || die "a session started at $(_hm "$(echo "$open" | cut -f1)") is still open; end it first"
-		shift; nm="${*:-adhoc}"
-		printf '%s 0 %s\n' "$(date +%s)" "$nm" >> "$ADHOC"
-		echo "session '$nm' started at $(date +%H:%M) -- end it with: classnet session end"
+		[ -z "$open" ] || die "a session started at $(_hm "$(echo "$open" | cut -f1)") is still running; end it first"
+		shift
+		until=0
+		if [ "${1:-}" = "--until" ]; then
+			shift
+			[ -n "${1:-}" ] || die "usage: classnet session start --until HH:MM [name]"
+			want="$1"; shift
+			until=$(date -D "%Y-%m-%d %H:%M" -d "$(date +%Y-%m-%d) $want" +%s 2>/dev/null) \
+				|| die "not a time: $want (want HH:MM, today)"
+			[ "$until" -gt "$now" ] || die "$want is already past -- sessions do not run backwards"
+		fi
+		nm="${*:-adhoc}"
+		printf '%s %s %s\n' "$now" "$until" "$nm" >> "$ADHOC"
+		if [ "$until" = 0 ]; then
+			echo "session '$nm' started at $(date +%H:%M) -- end it with: classnet session end"
+		else
+			echo "session '$nm' started at $(date +%H:%M), ends at $(_hm "$until")"
+			echo "  it closes itself then; classnet session end closes it sooner"
+		fi
 		sched_now ;;
 	end)
-		[ -n "$open" ] || die "no session is open"
+		[ -n "$open" ] || die "no session is running"
 		st=$(echo "$open" | cut -f1); nm=$(echo "$open" | cut -f2)
-		awk -v s="$st" -v e="$(date +%s)" '!/^#/ && $1==s && $2==0 {$2=e} {print}' "$ADHOC" > "$ADHOC.new" \
+		# Matches on the start alone: a --until session has a non-zero end
+		# already, and ending early means overwriting it rather than skipping it.
+		awk -v s="$st" -v e="$now" '!/^#/ && $1==s {$2=e} {print}' "$ADHOC" > "$ADHOC.new" \
 			&& mv "$ADHOC.new" "$ADHOC"
 		echo "session '$nm' ended at $(date +%H:%M) ($(_hms $(( $(date +%s) - st )) ) elapsed)"
 		echo "See who was present: classnet attendance"
 		sched_now ;;
 	status)
 		if [ -n "$open" ]; then
-			echo "session '$(echo "$open" | cut -f2)' open since $(_hm "$(echo "$open" | cut -f1)")"
+			st=$(echo "$open" | cut -f1); nm=$(echo "$open" | cut -f2); en=$(echo "$open" | cut -f3)
+			if [ "$en" = 0 ]; then
+				echo "session '$nm' open since $(_hm "$st") -- no end time, it will not close itself"
+			else
+				echo "session '$nm' open since $(_hm "$st"), ends at $(_hm "$en")"
+			fi
 		else
 			d=$(date +%Y-%m-%d)
 			echo "no ad-hoc session open"
@@ -1158,12 +1184,31 @@ cmd_session() {
 					|| echo "  scheduled '$nm' today $(_hm "$a")-$(_hm "$b")"
 			done
 		fi ;;
+	reap)
+		# A session left open is reported as running up to *now*, forever. A
+		# forgotten office hour therefore becomes a twenty-hour window with
+		# everyone who passed the router in it, and with a schedule armed it
+		# holds the SSID open all evening. Close it at the end of the day it
+		# started on: the network was not a class after midnight whatever the
+		# file says. Announced, because it edits an attendance record.
+		today=$(date +%Y-%m-%d)
+		for s in $(awk '!/^#/ && NF>=3 && $2==0 {print $1}' "$ADHOC" 2>/dev/null); do
+			d=$(date -d "@$s" +%Y-%m-%d 2>/dev/null) || continue
+			[ "$d" = "$today" ] && continue
+			eod=$(date -D "%Y-%m-%d %H:%M:%S" -d "$d 23:59:59" +%s 2>/dev/null) || continue
+			nm=$(awk -v s="$s" '$1==s {n=$3; for (i=4; i<=NF; i++) n=n" "$i; print n; exit}' "$ADHOC")
+			awk -v s="$s" -v e="$eod" '!/^#/ && $1==s && $2==0 {$2=e} {print}' "$ADHOC" > "$ADHOC.new" \
+				&& mv "$ADHOC.new" "$ADHOC"
+			logger -t classnet "session: '$nm' was left open on $d -- closed at the end of that day"
+			echo "closed '$nm', left open on $d"
+		done
+		return 0 ;;
 	windows)
 		# What classnet-schedule reads. Deliberately the same sessions_for the
 		# attendance report uses: two parsers would let the network be open at
 		# a time that is not counted.
 		sessions_for "$(date +%Y-%m-%d)" ;;
-	*) die "usage: classnet session start [name] | end | status | windows" ;;
+	*) die "usage: classnet session start [--until HH:MM] [name] | end | status" ;;
 	esac
 }
 
@@ -1257,6 +1302,7 @@ classnet -- CS 326 classroom network control
   classnet attendance --student <github>   one person across the term
   classnet export [--all|--since <date>|<date>]   the same as CSV
   classnet session start [name]    open an attendance window outside the timetable
+  classnet session start --until HH:MM [name]   the same, closing itself at HH:MM
   classnet session end
   classnet session status
   classnet schedule on|off         open the student SSID only during class periods

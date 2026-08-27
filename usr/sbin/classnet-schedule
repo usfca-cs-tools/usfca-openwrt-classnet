@@ -29,11 +29,6 @@ LEAD=$(( ${SCHEDULE_LEAD_MIN:-5} * 60 ))
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
-if [ ! -f "$FLAG_SCHED" ]; then
-	[ "$DRY" = 1 ] && echo "schedule is off -- arm it with: classnet schedule on"
-	exit 0
-fi
-
 # No RTC on these boards. At boot sysfixtime restores the clock from the newest
 # mtime under /etc, so after a power cut the router believes it is whenever it
 # last wrote a file. Deciding a timetable from that can close the SSID in the
@@ -54,6 +49,16 @@ if [ ! -f "$CLOCK" ]; then
 		: > "$CLOCK-warned"
 		logger -t classnet "schedule: waiting for ntpd before touching $SSID (no RTC on this board)"
 	fi
+	exit 0
+fi
+
+# Attendance hygiene, and deliberately not gated on the timetable: a session
+# left open distorts the record whether or not anything is enforcing periods.
+# Silent here because it announces itself to syslog when it finds one.
+[ "$DRY" = 1 ] || /usr/sbin/classnet session reap >/dev/null 2>&1
+
+if [ ! -f "$FLAG_SCHED" ]; then
+	[ "$DRY" = 1 ] && echo "schedule is off -- arm it with: classnet schedule on"
 	exit 0
 fi
 
