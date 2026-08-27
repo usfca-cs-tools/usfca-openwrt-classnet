@@ -69,7 +69,14 @@ open=""
 # on ash, and the values set in it would not survive the loop.
 while IFS="$(printf '\t')" read -r nm a b; do
 	[ -n "${a:-}" ] && [ -n "${b:-}" ] || continue
-	if [ "$now" -ge "$((a - LEAD))" ] && [ "$now" -le "$b" ]; then
+	# End is exclusive, and that single character matters: `session end` stamps
+	# the end with the second the command started, so an inclusive test still
+	# calls the session running when the scheduler evaluates in that same
+	# second. It would then leave the SSID up and wait for the next cron tick
+	# to notice. A session that ended at 14:32:03 is over at 14:32:03.
+	# Attendance keeps its inclusive comparison: a sample taken exactly on the
+	# boundary still counts as present.
+	if [ "$now" -ge "$((a - LEAD))" ] && [ "$now" -lt "$b" ]; then
 		want=up; open="$nm"; break
 	fi
 done <<EOF

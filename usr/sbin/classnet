@@ -1152,7 +1152,9 @@ cmd_session() {
 			echo "  it closes itself then; classnet session end closes it sooner"
 		fi
 		sched_now ;;
-	end)
+	# `stop` because it is what people reach for. `end` stays the name in the
+	# docs and the usage line: one spelling in writing, two that work.
+	end|stop)
 		[ -n "$open" ] || die "no session is running"
 		st=$(echo "$open" | cut -f1); nm=$(echo "$open" | cut -f2)
 		# Matches on the start alone: a --until session has a non-zero end
@@ -1303,7 +1305,7 @@ classnet -- CS 326 classroom network control
   classnet export [--all|--since <date>|<date>]   the same as CSV
   classnet session start [name]    open an attendance window outside the timetable
   classnet session start --until HH:MM [name]   the same, closing itself at HH:MM
-  classnet session end
+  classnet session end | stop
   classnet session status
   classnet schedule on|off         open the student SSID only during class periods
   classnet gate on|off             require registration before the allowlist applies
