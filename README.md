@@ -17,9 +17,13 @@ router ──────────┤
 
 ## What a student does
 
-**Once, on each laptop they bring.** They join the class Wi-Fi and a sign-in
-sheet opens by itself. One button, their university Google account, done —
-about thirty seconds, entirely on the laptop in front of them.
+**Once, on each laptop they bring.** They join the class Wi-Fi and open the
+sign-in page in their own browser. One button, their university Google account,
+done — about thirty seconds, entirely on the laptop in front of them.
+
+```
+Join cs245, then open  http://signin.cs245
+```
 
 ```
  ┌────────────────────────────────┐
@@ -39,15 +43,11 @@ about thirty seconds, entirely on the laptop in front of them.
 browser, and approve at Google — where they are already signed in, so it is an
 account picker rather than a password.
 
-By default the Wi-Fi sign-in sheet does **not** pop up, and that is deliberate.
-Intercepting the OS connectivity probe is what makes it appear, and macOS then
-flags the network captive and refuses to let Safari reach the sign-in host at
-all — the pop-up shows up and sign-in cannot be completed from it. So students
-are told the router's address instead:
-
-```
-Join cs245, then open http://signin.cs245 in your browser
-```
+**Why a URL rather than the Wi-Fi pop-up?** Making that pop-up appear means
+intercepting the OS connectivity probe, and macOS then flags the network
+captive and refuses to let the browser out at all — so the pop-up shows up and
+sign-in cannot be completed from it. A URL on a slide costs one line; a sign-in
+that cannot be completed costs the session.
 
 `PORTAL_HOST` sets that name; the router answers for it on the class network
 only, the bare first label works too, and its IP address always works.
@@ -322,6 +322,26 @@ publishing needs no Google verification review.
 The portal checks the signed-in domain **server-side** against `ALLOWED_DOMAIN`,
 accepting the domain and any subdomain. That check is the only thing between any
 Google account and your network, so it is unit-tested.
+
+### Your institution's single sign-on
+
+**Do not skip this.** A university Google account is usually federated: choosing
+it at Google redirects to your own identity provider, and if that host is not in
+the walled garden the student lands on *"Safari can't find the server"* holding
+a screenful of SAML query string. Here the chain runs
+
+```
+accounts.google.com  →  idp.usfca.edu (Shibboleth)  →  usfcas.usfca.edu (CAS)  →  Duo
+```
+
+so `garden.list` allows the whole institution domain rather than naming each
+host — every hop is otherwise a separate outage waiting to happen. Edit that
+section for your own institution.
+
+It is easy to miss, because an instructor testing in a browser that already has
+a live Google session never takes the SAML path at all. Every student on day one
+does. To find yours: `classnet debug on`, attempt a sign-in, then `classnet log`
+names every host that was refused.
 
 ### The roster
 
