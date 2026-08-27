@@ -549,14 +549,12 @@ them a moment and you do not need to do anything else.</p>\
         "<p class=lead>Sign in with your <b>USF</b> account to join the class \
 network. Once per laptop, about thirty seconds.</p>\
 <span class=code>{}</span>\
-<a class=btn href='{}'>Sign in with Google</a>\
-<p class=muted><b>No account to choose from?</b> Then you are in the Wi-Fi \
-pop-up window, which has no Google session. Open <b>Safari</b> or <b>Chrome</b> \
-and go to<br><b>{}</b><br>&mdash; this same page, where you are already signed \
-in &mdash; and press the button there.</p>\
-<p class=muted>Note the code above first; you will need to type it at Google. \
-Leave this window open or close it, either is fine &mdash; the network lets you \
-through by itself once you approve.</p>\
+<a class=btn href='{}' target=_blank rel=noopener>Sign in with Google &rarr;</a>\
+<p class=muted>Google opens in a new tab and asks for that code. This tab \
+stays put, so switch back if you need to read it again.</p>\
+<p class=muted><b>No account to choose from?</b> You are in the Wi-Fi pop-up \
+window, which has no Google session. Open <b>Safari</b> or <b>Chrome</b> and go \
+to <b>{}</b> &mdash; this same page &mdash; and press the button there.</p>\
 <script>setInterval(async()=>{{try{{const r=await fetch('/status');\
 const j=await r.json();if(j.state==='done'||j.state==='problem')location.reload();}}\
 catch(e){{}}}},{}000);</script>",
