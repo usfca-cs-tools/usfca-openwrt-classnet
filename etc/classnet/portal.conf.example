@@ -1,0 +1,20 @@
+# CS 326 sign-in portal.  Copy to portal.conf and fill in.
+#
+# Create the client at https://console.cloud.google.com/apis/credentials
+#   Create Credentials -> OAuth client ID
+#   Application type:  "TVs and Limited Input devices"
+#
+# That type matters: it is the only one that issues a device-flow client, and
+# the device flow is the only Google flow that needs no redirect URI. Google
+# refuses private-IP redirect URIs, so a portal at 192.168.63.1 could never be
+# registered as one.
+GOOGLE_CLIENT_ID=""
+GOOGLE_CLIENT_SECRET=""
+
+# Only accounts in this domain (or a subdomain of it) may register.
+# Verified server-side against the signed-in account, not from the `hd`
+# request hint, which is only a UI suggestion.
+ALLOWED_DOMAIN="usfca.edu"
+
+PORTAL_LISTEN="192.168.63.1"
+PORTAL_PORT="8080"

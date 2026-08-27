@@ -1,0 +1,8 @@
+# profile: rust    (syllabus promises the Rust package registry is reachable)
+crates.io
+index.crates.io
+static.crates.io
+static.rust-lang.org
+sh.rustup.rs
+# doc.rust-lang.org lives in the `docs` profile, not here: this list is what
+# cargo needs to build, that one is what a student may read.

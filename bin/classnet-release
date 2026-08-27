@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# classnet-release -- push an already-staged release into selected students' repos.
+#
+#   oslings release 37k_spinlocks --to ../oslings-course      # unchanged
+#   classnet-release --from ../oslings-course --to @present --dry-run
+#   classnet-release --from ../oslings-course --to @present
+#
+# oslings is NOT modified and NOT invoked. You stage the release exactly as you
+# do today; this delivers that same course-repo state to specific students by
+# performing, on their behalf, the merge their own `oslings update` would have
+# done. Same semantics, so info.toml and the exercise tree land correctly
+# instead of being copied file-by-file and hoping.
+#
+# --to accepts:
+#   @present     GitHub usernames of registered devices in the room right now
+#   @registered  everyone who has ever registered a device
+#   @group:NAME  a line from groups.txt:  NAME: user1 user2 user3
+#   user1,user2  an explicit list
+set -euo pipefail
+
+HOST=cs326
+FROM=""; TO=""; DRY=0; BRANCH=main
+WORK="${TMPDIR:-/tmp}/classnet-release.$$"
+# Split deliberately. Nesting $(...) with its own quotes inside a
+# "${VAR:-default}" makes bash 5.2 abort at runtime with no message, while
+# bash -n still reports the file as fine -- a genuinely silent failure.
+SELF_DIR=$(dirname "$0")
+GROUPS="${CS326_GROUPS:-$SELF_DIR/../etc/classnet/groups.txt}"
+
+die() { echo "classnet-release: $*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from)   FROM="${2:-}"; shift 2 ;;
+    --to)     TO="${2:-}";   shift 2 ;;
+    --host)   HOST="${2:-}"; shift 2 ;;
+    --branch) BRANCH="${2:-}"; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$FROM" ] || die "need --from <staged course repo>"
+[ -n "$TO" ]   || die "need --to <@present|@registered|@group:NAME|user1,user2>"
+[ -d "$FROM/.git" ] || die "$FROM is not a git repository"
+FROM="$(cd "$FROM" && pwd)"
+
+command -v gh >/dev/null 2>&1 || die "the gh CLI is required (brew install gh)"
+gh auth status >/dev/null 2>&1 || die "gh is not authenticated (gh auth login)"
+
+# ---- who ------------------------------------------------------------------
+case "$TO" in
+  @present)    USERS=$(ssh "$HOST" 'classnet who --github' 2>/dev/null || true) ;;
+  @registered|@all) USERS=$(ssh "$HOST" 'classnet roster --github' 2>/dev/null || true) ;;
+  @group:*)    g="${TO#@group:}"
+               [ -f "$GROUPS" ] || die "no groups file at $GROUPS"
+               USERS=$(awk -F: -v g="$g" '$1==g{print $2}' "$GROUPS" | tr ' ' '\n' | grep -v '^$' || true)
+               [ -n "$USERS" ] || die "group '$g' not found in $GROUPS" ;;
+  *)           USERS=$(echo "$TO" | tr ',' '\n' | grep -v '^$') ;;
+esac
+[ -n "$USERS" ] || die "no targets matched '$TO'"
+
+COMMIT=$(git -C "$FROM" rev-parse --short HEAD)
+SUBJECT=$(git -C "$FROM" log -1 --pretty=%s)
+COUNT=$(echo "$USERS" | wc -l | tr -d ' ')
+
+echo "Release source : $FROM @ $COMMIT"
+echo "                 \"$SUBJECT\""
+echo "Targets ($TO)  : $COUNT student(s)"
+echo "$USERS" | sed 's/^/                 /'
+echo
+
+if [ "$DRY" = 1 ]; then
+  echo "$USERS" | while read -r u; do
+    [ -n "$u" ] || continue
+    if gh repo view "$u/oslings-$u" >/dev/null 2>&1; then
+      echo "  would push -> $u/oslings-$u"
+    else
+      echo "  MISSING     -> $u/oslings-$u  (repo not found or not shared with you)"
+    fi
+  done
+  echo
+  echo "Dry run: nothing was pushed. Re-run without --dry-run to deliver."
+  exit 0
+fi
+
+read -rp "Push into $COUNT student repositories? [y/N] " a
+[[ "$a" == [yY] ]] || exit 0
+
+mkdir -p "$WORK"; trap 'rm -rf "$WORK"' EXIT
+ok=0; skip=0; fail=0
+
+echo "$USERS" | while read -r u; do
+  [ -n "$u" ] || continue
+  repo="$u/oslings-$u"
+  d="$WORK/$u"
+  printf '  %-20s ' "$u"
+
+  if ! gh repo clone "$repo" "$d" -- -q --branch "$BRANCH" 2>/dev/null; then
+    echo "SKIP  (cannot clone $repo)"; skip=$((skip+1)); continue
+  fi
+  git -C "$d" remote add course "$FROM" 2>/dev/null || true
+  git -C "$d" fetch -q course 2>/dev/null || { echo "SKIP  (fetch failed)"; skip=$((skip+1)); continue; }
+
+  # The same merge `oslings update` performs. On conflict, abort and leave the
+  # student's repository untouched -- resolving someone else's merge for them
+  # is not something to do unattended.
+  if git -C "$d" merge --no-edit -q "course/$BRANCH" 2>/dev/null; then
+    if git -C "$d" push -q origin "HEAD:$BRANCH" 2>/dev/null; then
+      echo "ok"; ok=$((ok+1))
+    else
+      echo "FAIL  (push rejected)"; fail=$((fail+1))
+    fi
+  else
+    git -C "$d" merge --abort 2>/dev/null || true
+    echo "SKIP  (would conflict - student should run oslings update)"; skip=$((skip+1))
+  fi
+done
+
+echo
+echo "Done. Students who were skipped can still run 'oslings update' themselves;"
+echo "the release is in the public course repo either way."

@@ -1,0 +1,9 @@
+# profile: setup   -- OFF by default. Turn on only for install day:
+#   cs326 profile enable setup     ... then afterwards ...
+#   cs326 profile disable setup
+# Needed for `brew install qemu` / `apt-get install qemu-system-misc`.
+formulae.brew.sh
+ghcr.io
+pkg-containers.githubusercontent.com
+archive.ubuntu.com
+security.ubuntu.com

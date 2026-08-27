@@ -1,0 +1,22 @@
+# profile: docs   -- Rust reference material permitted during a session.
+#
+# Kept separate from the `rust` profile on purpose: the registry is what
+# cargo needs to build, this is what a student is allowed to read. They are
+# different policy questions and toggle independently.
+#
+# Each entry covers its subdomains, so rust-exercises.com also admits
+# www.rust-exercises.com.
+doc.rust-lang.org          # std library docs, the Book, Rust by Example, Reference
+rust-exercises.com
+rustlings.rust-lang.org    # CNAME -> rust-lang.github.io (GitHub Pages)
+play.rust-lang.org         # the "Run" buttons in the Book / Rust by Example
+
+# play.rust-lang.org compiles same-origin (POST /execute), so the one hostname
+# is enough. Its only external assets are Google Fonts, which the `cdn`
+# profile already carries -- turning `cdn` off leaves it working but unstyled.
+
+# Deliberately NOT included -- add with `cs326 allow add <host> docs` if wanted:
+#   docs.rs             per-crate API documentation.
+#   asciinema.org       the demo recording on the rustlings landing page.
+#   www.rust-lang.org   nav links out of both sites.
+#   plausible.io        analytics on rust-exercises.com; nothing renders from it.

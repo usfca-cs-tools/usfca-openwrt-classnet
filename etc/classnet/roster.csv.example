@@ -1,0 +1,20 @@
+# Maps USF people to GitHub usernames, so a student signing in with Google is
+# registered in one step and never sees the GitHub question.
+#
+# A Google Forms export works unchanged -- keep the header row and drop the
+# file in as-is:
+#
+#   Timestamp,Email Address,What is your GitHub username?
+#   2026/08/20 9:14:02 AM,jsmith@dons.usfca.edu,jsmith
+#
+# Columns are found by header name when a header is present ("github" for one,
+# "email"/"user"/"usf" for the other); otherwise the first column is the USF
+# identity and the last is the GitHub username.
+#
+# The USF side may be a full address or just the username, and matching is
+# case-insensitive and ignores the domain -- so "benson" here matches someone
+# signing in as benson@usfca.edu or benson@dons.usfca.edu.
+#
+# Install as /etc/classnet/roster.csv (it is gitignored: it is student data).
+usf_email,github
+benson@usfca.edu,gdbenson

@@ -1,0 +1,6 @@
+# Named groups for classnet-release --to @group:NAME
+# One per line:   name: githubuser1 githubuser2 ...
+#
+# Example:
+# makeup-thu: jsmith alopez
+# section-b:  rpatel kwong tnguyen

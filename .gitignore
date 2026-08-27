@@ -1,0 +1,18 @@
+.DS_Store
+*.swp
+*.swo
+
+# Secrets and student data. These live only on the router.
+etc/classnet/classnet.conf
+etc/classnet/portal.conf
+etc/classnet/roster.csv
+etc/classnet/enrolled.csv
+etc/classnet/registrations.tsv
+etc/classnet/registered.macs
+etc/classnet/attendance/
+etc/classnet/state-*
+
+# Build output. The portal is architecture-specific -- build it for your own
+# router rather than shipping one binary that only suits ours.
+portal/target/
+usr/sbin/classnet-portal

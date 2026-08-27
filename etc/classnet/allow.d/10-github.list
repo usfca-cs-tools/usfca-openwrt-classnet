@@ -1,0 +1,15 @@
+# Always on. Git clone/pull/push plus a usable GitHub web UI.
+#
+# Hostname-exact on purpose: api.githubcopilot.com is a CNAME to
+# glb-*.github.com which lands in 140.82.112.0/20, so anything CIDR-based
+# would re-enable Copilot. See deny.list.
+#
+# NOTE: each entry matches the name AND all of its subdomains, so `github.com`
+# below permits every *.github.com host. Name unwanted ones in deny.list.
+# The githubusercontent.com entry is deliberately the single `avatars.` host,
+# not the parent, so raw./codeload-style siblings stay denied.
+github.com
+ssh.github.com
+api.github.com
+github.githubassets.com
+avatars.githubusercontent.com

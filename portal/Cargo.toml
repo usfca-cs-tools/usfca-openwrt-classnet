@@ -1,0 +1,19 @@
+[package]
+name = "classnet-portal"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "classnet-portal"
+path = "src/main.rs"
+
+# No dependencies, on purpose. TLS is delegated to uclient-fetch, which is in
+# OpenWrt base and already trusts /etc/ssl/certs/ca-certificates.crt, so this
+# builds with rust-lld alone -- no C toolchain, no Docker, no vendored crypto.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

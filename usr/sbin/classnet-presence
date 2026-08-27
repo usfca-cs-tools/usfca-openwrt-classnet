@@ -1,0 +1,36 @@
+#!/bin/sh
+# cs326-presence -- one attendance sample. Run every minute from cron.
+#
+# Records which MACs are associated to the cs326 APs right now. That is all it
+# does: the AP already tracks association, so presence needs nothing from the
+# student -- no browser tab, no ping, no client software.
+#
+# Format, one line per associated MAC per sample:
+#   <unix-ts> <mac> <connected-seconds> <signal-dbm>
+#
+# `cs326 attendance` stitches these into intervals. Deliberately append-only
+# and plain text: it is small (30 students x 1/min x 2h = ~3600 lines/session),
+# greppable, and needs no database on a router.
+set -u
+CONF_DIR=/etc/cs326
+ATTEND="$CONF_DIR/attendance"
+[ -d /sys/class/net/br-cs326 ] || exit 0
+
+# Nothing to record when the student SSID is down.
+[ -f "$CONF_DIR/state-ssid-disabled" ] && exit 0
+
+mkdir -p "$ATTEND"
+now=$(date +%s)
+day=$(date +%Y-%m-%d)
+
+for i in /sys/class/net/br-cs326/brif/*; do
+	[ -e "$i" ] || continue
+	iw dev "$(basename "$i")" station dump 2>/dev/null | awk -v ts="$now" '
+		/^Station/          { mac=$2; sig=""; conn="" }
+		/^\tsignal:/        { sig=$2 }
+		/connected time/    { conn=$3; if (mac != "") print ts, mac, conn, sig }'
+done | sort -u >> "$ATTEND/$day.log"
+
+# Keep a semester, not forever.
+find "$ATTEND" -name '*.log' -mtime +140 -delete 2>/dev/null
+exit 0

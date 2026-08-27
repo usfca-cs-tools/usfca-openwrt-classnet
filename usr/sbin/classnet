@@ -1,0 +1,978 @@
+#!/bin/sh
+# classnet -- CS 326 classroom network control.
+#
+# Source of truth lives in /etc/classnet.  `classnet apply` regenerates every
+# UCI section this tool owns (all named after CLASS) from those files, so the
+# router config is reproducible and the repo diff is the whole story.
+
+set -u
+
+CONF_DIR=/etc/classnet
+CONF="$CONF_DIR/classnet.conf"
+ALLOW_DIR="$CONF_DIR/allow.d"
+DENY="$CONF_DIR/deny.list"
+STATIC4="$CONF_DIR/static4.list"
+MACS="$CONF_DIR/staff-macs.list"
+# Operator state lives on disk, not just in UCI: `classnet apply` regenerates
+# every section it owns, so without these a later `classnet staff add` would
+# silently re-enable a disabled SSID or re-lock an unlocked network.
+FLAG_OFF="$CONF_DIR/state-ssid-disabled"
+FLAG_OPEN="$CONF_DIR/state-unlocked"
+FLAG_DBG="$CONF_DIR/state-debug"
+FLAG_GATE="$CONF_DIR/state-gate-on"
+GARDEN="$CONF_DIR/garden.list"
+REGTSV="$CONF_DIR/registrations.tsv"
+REGMACS="$CONF_DIR/registered.macs"
+ATTEND="$CONF_DIR/attendance"
+PORTAL_PORT=8080
+MARK=0x326
+
+ALWAYS_ON="core github site"
+
+die() { echo "classnet: $*" >&2; exit 1; }
+info() { echo "  $*"; }
+
+[ -f "$CONF" ] || die "missing $CONF"
+# shellcheck disable=SC1090
+. "$CONF"
+
+: "${CLASS:?set CLASS in $CONF}" "${SSID:?}" "${KEY:?}" "${NET:?}"
+: "${STAFF_SSID:?}" "${STAFF_KEY:?}" "${STAFF_NET:?}"
+
+# The class name drives every generated identifier: SSID, firewall zones,
+# nftables sets, bridges, UCI section names. Constrained because those are not
+# all equally forgiving -- a Linux interface name caps at 15 characters and
+# "br-" plus the class has to fit, and UCI section names are identifiers.
+echo "$CLASS" | grep -qE '^[a-z][a-z0-9]{1,10}$' \
+	|| die "CLASS must be 2-11 characters, lowercase letters and digits, starting with a letter (got '$CLASS')"
+C="$CLASS"
+: "${COUNTRY:=US}" "${UPSTREAM_DNS:=1.1.1.1}" "${PROFILES:=}"
+: "${STAFF_HIDDEN:=0}" "${ALLOW_TCP:=22 80 443}" "${ALLOW_UDP:=443}"
+
+CLASS_IP="$NET.1"
+STAFF_IP="$STAFF_NET.1"
+
+# ---------------------------------------------------------------- helpers ---
+
+# strip comments (whole-line and trailing) and blanks
+strip() { sed -e 's/[[:space:]]*#.*$//' -e 's/[[:space:]]*$//' -e '/^$/d' "$@"; }
+
+profile_of() { basename "$1" .list | sed 's/^[0-9]*-//'; }
+
+ssid_off()   { [ -f "$FLAG_OFF" ]; }
+is_unlocked(){ [ -f "$FLAG_OPEN" ]; }
+is_debug()   { [ -f "$FLAG_DBG" ]; }
+# The registration gate is opt-in: turning it on mid-session would cut off
+# every already-connected laptop at once, so it must be a deliberate act.
+gate_on()    { [ -f "$FLAG_GATE" ]; }
+
+garden_domains(){ [ -f "$GARDEN" ] && strip "$GARDEN" | awk '!s[$0]++'; }
+registrations() { [ -f "$REGTSV" ] && grep -v '^#' "$REGTSV" 2>/dev/null | grep -v '^$'; }
+
+profile_enabled() {
+	# `local` matters: callers loop over profiles in a variable named p, and
+	# a bare `for p` here would clobber theirs on the not-found path.
+	local x
+	for x in $ALWAYS_ON; do [ "$x" = "$1" ] && return 0; done
+	for x in $PROFILES; do [ "$x" = "$1" ] && return 0; done
+	return 1
+}
+
+# every allowlisted domain, deduped, in file order
+domains() {
+	for f in "$ALLOW_DIR"/*.list; do
+		[ -f "$f" ] || continue
+		profile_enabled "$(profile_of "$f")" || continue
+		strip "$f"
+	done | awk '!seen[$0]++'
+}
+
+denied()    { [ -f "$DENY" ] && strip "$DENY" | awk '!seen[$0]++'; }
+staff_macs(){ [ -f "$MACS" ] && strip "$MACS" | tr 'A-Z' 'a-z' | awk '!seen[$0]++'; }
+
+# delete every UCI section this tool owns in the given config
+wipe() {
+	uci show "$1" 2>/dev/null | sed -n "s/^\($1\.${C}[a-z0-9_]*\)=.*/\1/p" \
+		| sort -u | while read -r s; do uci -q delete "$s"; done
+}
+
+# ------------------------------------------------------------------ apply ---
+
+apply_network() {
+	wipe network
+	uci set network.${C}_dev=device
+	uci set network.${C}_dev.name="br-${C}"
+	uci set network.${C}_dev.type='bridge'
+	uci set network.${C}=interface
+	uci set network.${C}.device="br-${C}"
+	uci set network.${C}.proto='static'
+	uci set network.${C}.ipaddr="$CLASS_IP"
+	uci set network.${C}.netmask='255.255.255.0'
+	# no ip6assign: IPv6 is off on the student segment on purpose.
+
+	uci set network.${C}s_dev=device
+	uci set network.${C}s_dev.name="br-${C}s"
+	uci set network.${C}s_dev.type='bridge'
+	uci set network.${C}staff=interface
+	uci set network.${C}staff.device="br-${C}s"
+	uci set network.${C}staff.proto='static'
+	uci set network.${C}staff.ipaddr="$STAFF_IP"
+	uci set network.${C}staff.netmask='255.255.255.0'
+	uci set network.${C}staff.ip6assign='60'
+}
+
+apply_wireless() {
+	wipe wireless
+	# retire the stock disabled "OpenWrt" APs
+	uci -q delete wireless.default_radio0
+	uci -q delete wireless.default_radio1
+
+	for r in 0 1; do
+		uci -q get "wireless.radio$r" >/dev/null || continue
+		uci set "wireless.radio$r.country=$COUNTRY"
+		uci set "wireless.radio$r.disabled=0"
+	done
+
+	ssid_off && off=1 || off=0
+	_ap ${C}_2g  radio0 "$SSID" "$KEY" "$C"        0 "$off"
+	_ap ${C}_5g  radio1 "$SSID" "$KEY" "$C"        0 "$off"
+	_ap ${C}s_2g radio0 "$STAFF_SSID" "$STAFF_KEY" ${C}staff "$STAFF_HIDDEN" 0
+	_ap ${C}s_5g radio1 "$STAFF_SSID" "$STAFF_KEY" ${C}staff "$STAFF_HIDDEN" 0
+}
+
+_ap() {
+	sec="$1"; dev="$2"; ssid="$3"; key="$4"; net="$5"; hidden="$6"; off="$7"
+	uci -q get "wireless.$dev" >/dev/null || return 0
+	uci set "wireless.$sec=wifi-iface"
+	uci set "wireless.$sec.device=$dev"
+	uci set "wireless.$sec.mode=ap"
+	uci set "wireless.$sec.ssid=$ssid"
+	uci set "wireless.$sec.network=$net"
+	uci set "wireless.$sec.encryption=psk2+ccmp"
+	uci set "wireless.$sec.key=$key"
+	uci set "wireless.$sec.hidden=$hidden"
+	uci set "wireless.$sec.isolate=0"
+	uci set "wireless.$sec.disabled=$off"
+}
+
+apply_dhcp() {
+	wipe dhcp
+
+	# Name the stock instance so sections can be bound to it explicitly.
+	# Sections with no `instance` are inherited by EVERY instance
+	# (/etc/init.d/dnsmasq filter_dnsmasq), which would otherwise leak the
+	# lan config into the filtered classnet resolver.
+	uci -q get dhcp.main >/dev/null 2>&1 || uci -q rename dhcp.@dnsmasq[0]='main'
+	uci set dhcp.main.instance='main'
+	for s in lan wan; do
+		uci -q get "dhcp.$s" >/dev/null 2>&1 && uci set "dhcp.$s.instance=main"
+	done
+	# main serves everything except the student segment
+	uci -q del_list dhcp.main.notinterface="$C"
+	uci add_list dhcp.main.notinterface="$C"
+
+	# ---- the filtered resolver -------------------------------------------
+	uci set dhcp.${C}=dnsmasq
+	uci add_list dhcp.${C}.interface="$C"
+	# dnsmasq adds loopback automatically whenever --interface is used; without
+	# this the second instance collides with main on 127.0.0.1:53 and dies.
+	uci add_list dhcp.${C}.notinterface='lo'
+	uci set dhcp.${C}.nonwildcard='1'      # --bind-dynamic, classnet iface only
+	uci set dhcp.${C}.localservice='1'
+	uci set dhcp.${C}.noresolv='1'         # ignore the WAN-learned resolvers
+	uci set dhcp.${C}.localuse='0'         # do not rewrite /tmp/resolv.conf
+	uci set dhcp.${C}.authoritative='1'
+	uci set dhcp.${C}.rebind_protection='0'
+	uci set dhcp.${C}.domain="$C"
+	uci set dhcp.${C}.local="/$C/"
+	uci set dhcp.${C}.expandhosts='1'
+	uci set dhcp.${C}.cachesize='2000'
+	uci set dhcp.${C}.leasefile="/tmp/dhcp.${C}.leases"
+	uci set dhcp.${C}.domainneeded='1'
+	uci set dhcp.${C}.boguspriv='1'
+	# The student segment is v4-only and the allow set is v4-only, so an AAAA
+	# answer can only ever produce a stalled connection attempt.
+	uci set dhcp.${C}.filter_aaaa='1'
+	is_debug && uci set dhcp.${C}.logqueries='1'
+
+	# allowlist: one --server per (domain, upstream). More specific than the
+	# /#/ catch-all below, so these are the only names that ever resolve.
+	domains | while read -r d; do
+		for u in $UPSTREAM_DNS; do
+			uci add_list "dhcp.${C}.server=/$d/$u"
+		done
+	done
+
+	# The garden resolves for everyone; the firewall, not DNS, is what keeps a
+	# registered student out of it.
+	garden_domains | while read -r d; do
+		for u in $UPSTREAM_DNS; do
+			uci add_list "dhcp.${C}.server=/$d/$u"
+		done
+	done
+
+	# denylist: empty address == NXDOMAIN, and more specific than any
+	# broader allow entry someone might add later.
+	denied | while read -r d; do
+		uci add_list "dhcp.${C}.address=/$d/"
+	done
+
+	if is_unlocked; then
+		# Escape hatch: resolve everything. The deny list above still stands,
+		# so unlocking restores Internet access without restoring Copilot.
+		for u in $UPSTREAM_DNS; do uci add_list "dhcp.${C}.server=$u"; done
+	else
+		# default deny. `/#/` matches anything not claimed by a --server above.
+		uci add_list dhcp.${C}.address='/#/'
+	fi
+
+	# resolved answers for allowlisted names land in the firewall set
+	uci set dhcp.${C}_ipset=ipset
+	uci set dhcp.${C}_ipset.instance="$C"
+	uci add_list dhcp.${C}_ipset.name="${C}_dns4"
+	uci set dhcp.${C}_ipset.table='fw4'
+	uci set dhcp.${C}_ipset.table_family='inet'
+	uci set dhcp.${C}_ipset.family='4'
+	domains | while read -r d; do
+		uci add_list "dhcp.${C}_ipset.domain=$d"
+	done
+
+	# garden answers land in their own set, never in ${C}_dns4
+	uci set dhcp.${C}_gipset=ipset
+	uci set dhcp.${C}_gipset.instance="$C"
+	uci add_list dhcp.${C}_gipset.name="${C}_garden4"
+	uci set dhcp.${C}_gipset.table='fw4'
+	uci set dhcp.${C}_gipset.table_family='inet'
+	uci set dhcp.${C}_gipset.family='4'
+	garden_domains | while read -r d; do
+		uci add_list "dhcp.${C}_gipset.domain=$d"
+	done
+
+	uci set dhcp.${C}_pool=dhcp
+	uci set dhcp.${C}_pool.instance="$C"
+	uci set dhcp.${C}_pool.interface="$C"
+	uci set dhcp.${C}_pool.start='100'
+	uci set dhcp.${C}_pool.limit='150'
+	uci set dhcp.${C}_pool.leasetime='4h'
+	uci set dhcp.${C}_pool.dhcpv4='server'
+	uci set dhcp.${C}_pool.dhcpv6='disabled'
+	uci set dhcp.${C}_pool.ra='disabled'
+	# option 42 = NTP. TLS fails on a skewed clock and every allowlisted
+	# host is TLS-only, so hand out the router as a time source.
+	uci add_list "dhcp.${C}_pool.dhcp_option=42,$CLASS_IP"
+	# No explicit option 6 here: dnsmasq advertises itself as the resolver by
+	# default, so the tagged staff override below wins outright rather than
+	# tying with a pool-level option on tag count.
+
+	# Staff machines on the student SSID get a public resolver instead of the
+	# filtered one. They can reach it because the MAC rule in apply_firewall
+	# gives them a full ACCEPT to wan, and because they are exempted from the
+	# port-53 redirect. Without this the MAC bypass is only half a bypass:
+	# unrestricted routing but no way to resolve anything.
+	if [ -n "$(staff_macs)" ]; then
+		set -- $UPSTREAM_DNS
+		uci set dhcp.${C}stafftag=tag
+		uci add_list "dhcp.${C}stafftag.dhcp_option=6,$1"
+		i=0
+		staff_macs | while read -r m; do
+			i=$((i+1))
+			uci set "dhcp.${C}staffhost$i=host"
+			uci set "dhcp.${C}staffhost$i.instance=$C"
+			uci add_list "dhcp.${C}staffhost$i.mac=$m"
+			uci set "dhcp.${C}staffhost$i.tag=${C}stafftag"
+			# A name is required: dhcp_host_add() in /etc/init.d/dnsmasq
+			# returns early unless ip, name or hostid is set, so a
+			# mac+tag-only section is silently dropped.
+			uci set "dhcp.${C}staffhost$i.name=${C}staff$i"
+		done
+	fi
+
+	uci set dhcp.${C}staff_pool=dhcp
+	uci set dhcp.${C}staff_pool.instance='main'
+	uci set dhcp.${C}staff_pool.interface="${C}staff"
+	uci set dhcp.${C}staff_pool.start='100'
+	uci set dhcp.${C}staff_pool.limit='100'
+	uci set dhcp.${C}staff_pool.leasetime='12h'
+	uci set dhcp.${C}staff_pool.dhcpv4='server'
+}
+
+apply_firewall() {
+	wipe firewall
+
+	# DNS-learned addresses. dest_ip (not dest_net) => a plain ipv4_addr set;
+	# an interval set would reject the bare addresses dnsmasq inserts.
+	uci set firewall.${C}_set_dns=ipset
+	uci set firewall.${C}_set_dns.name="${C}_dns4"
+	uci set firewall.${C}_set_dns.family='ipv4'
+	uci add_list firewall.${C}_set_dns.match='dest_ip'
+	uci set firewall.${C}_set_dns.timeout='86400'
+
+	# static CIDRs (GitHub Pages edge) -- survives DoH clients
+	uci set firewall.${C}_set_net=ipset
+	uci set firewall.${C}_set_net.name="${C}_net4"
+	uci set firewall.${C}_set_net.family='ipv4'
+	uci add_list firewall.${C}_set_net.match='dest_net'
+	uci set firewall.${C}_set_net.loadfile="$STATIC4"
+
+	# Registered devices, by MAC. Loaded at firewall start; the portal also
+	# adds elements live with `nft add element`, so registering a student
+	# never reloads the ruleset and never disturbs anyone already connected.
+	uci set firewall.${C}_set_reg=ipset
+	uci set firewall.${C}_set_reg.name="${C}_reg"
+	uci add_list firewall.${C}_set_reg.match='src_mac'
+	uci set firewall.${C}_set_reg.loadfile="$REGMACS"
+
+	# Pre-auth walled garden, DNS-fed like ${C}_dns4.
+	uci set firewall.${C}_set_gar=ipset
+	uci set firewall.${C}_set_gar.name="${C}_garden4"
+	uci set firewall.${C}_set_gar.family='ipv4'
+	uci add_list firewall.${C}_set_gar.match='dest_ip'
+	uci set firewall.${C}_set_gar.timeout='86400'
+
+	uci set firewall.${C}_zone=zone
+	uci set firewall.${C}_zone.name="$C"
+	uci add_list firewall.${C}_zone.network="$C"
+	uci set firewall.${C}_zone.input='REJECT'
+	uci set firewall.${C}_zone.output='ACCEPT'
+	uci set firewall.${C}_zone.forward='REJECT'
+
+	uci set firewall.${C}_szone=zone
+	uci set firewall.${C}_szone.name="${C}staff"
+	uci add_list firewall.${C}_szone.network="${C}staff"
+	uci set firewall.${C}_szone.input='REJECT'
+	uci set firewall.${C}_szone.output='ACCEPT'
+	uci set firewall.${C}_szone.forward='REJECT'
+
+	uci set firewall.${C}_sfwd=forwarding
+	uci set firewall.${C}_sfwd.src="${C}staff"
+	uci set firewall.${C}_sfwd.dest='wan'
+
+	# escape hatch: `classnet unlock` enables this, giving the student SSID
+	# unrestricted access without dropping anyone off the network.
+	uci set firewall.${C}_unlock=forwarding
+	uci set firewall.${C}_unlock.src="$C"
+	uci set firewall.${C}_unlock.dest='wan'
+	is_unlocked && uci set firewall.${C}_unlock.enabled='1' \
+	            || uci set firewall.${C}_unlock.enabled='0'
+
+	_svc ${C}_in_dhcp   "$C" udp 67  "$C DHCP"
+	_svc ${C}_in_dns    "$C" 'tcp udp' 53 "$C DNS"
+	_svc ${C}_in_ntp    "$C" udp 123 "$C NTP"
+	_svc ${C}_sin_dhcp  ${C}staff udp 67  'staff DHCP'
+	_svc ${C}_sin_dns   ${C}staff 'tcp udp' 53 'staff DNS'
+	_svc ${C}_sin_ntp   ${C}staff udp 123 'staff NTP'
+
+	# Management access: ssh to the router from the staff SSID. The staff zone
+	# has input REJECT, so without this a staff laptop can only reach the
+	# resolver -- not dropbear, on any of the router's addresses.
+	_svc ${C}_sin_ssh   ${C}staff tcp 22  'staff SSH'
+
+	# staff MAC bypass -- only created when at least one MAC is configured,
+	# because a src_mac rule with an empty list matches EVERYTHING.
+	if [ -n "$(staff_macs)" ]; then
+		uci set firewall.${C}_staffmac=rule
+		uci set firewall.${C}_staffmac.name="$C-staff-mac-bypass"
+		uci set firewall.${C}_staffmac.src="$C"
+		uci set firewall.${C}_staffmac.dest='wan'
+		uci set firewall.${C}_staffmac.proto='all'   # incl. ICMP, not just tcp/udp
+		uci set firewall.${C}_staffmac.target='ACCEPT'
+		staff_macs | while read -r m; do
+			uci add_list "firewall.${C}_staffmac.src_mac=$m"
+		done
+	fi
+
+	if gate_on; then
+		# One fw4 rule carries only one ipset, so the registered-MAC test and
+		# the allowed-destination test cannot live in the same rule. Mark in
+		# mangle_forward (priority -150) and match the mark in filter forward
+		# (priority 0), which runs after it.
+		uci set firewall.${C}_mark=rule
+		uci set firewall.${C}_mark.name="$C-mark-registered"
+		uci set firewall.${C}_mark.src="$C"
+		uci set firewall.${C}_mark.dest='wan'
+		uci set firewall.${C}_mark.proto='all'
+		uci set firewall.${C}_mark.ipset="${C}_reg"
+		uci set firewall.${C}_mark.set_mark="$MARK"
+		uci set firewall.${C}_mark.target='MARK'
+
+		_allow ${C}_allow_dns ${C}_dns4    "$ALLOW_TCP" "$ALLOW_UDP" "$MARK"
+		_allow ${C}_allow_net ${C}_net4    "80 443"     "$ALLOW_UDP" "$MARK"
+		# unregistered devices reach the sign-in garden and nothing else
+		_allow ${C}_garden    ${C}_garden4 "80 443"     "443"        "!$MARK"
+
+		# ...and their plain-HTTP goes to the portal, which is what makes the
+		# captive-portal sheet open by itself. A redirect can match the MAC set
+		# directly, so this needs no mark and no ordering assumption.
+		uci set firewall.${C}_portal=redirect
+		uci set firewall.${C}_portal.name="$C-portal-intercept"
+		uci set firewall.${C}_portal.src="$C"
+		uci set firewall.${C}_portal.proto='tcp'
+		uci set firewall.${C}_portal.src_dport='80'
+		uci set firewall.${C}_portal.dest_ip="$CLASS_IP"
+		uci set firewall.${C}_portal.dest_port="$PORTAL_PORT"
+		uci set firewall.${C}_portal.ipset="!${C}_reg"
+		uci set firewall.${C}_portal.target='DNAT'
+
+		_svc ${C}_in_portal "$C" tcp "$PORTAL_PORT" "$C portal"
+	else
+		_allow ${C}_allow_dns ${C}_dns4 "$ALLOW_TCP" "$ALLOW_UDP"
+		_allow ${C}_allow_net ${C}_net4 "80 443"     "$ALLOW_UDP"
+	fi
+
+	# fail fast instead of hanging when a client tries DNS-over-TLS
+	uci set firewall.${C}_no_dot=rule
+	uci set firewall.${C}_no_dot.name="$C-block-dot"
+	uci set firewall.${C}_no_dot.src="$C"
+	uci set firewall.${C}_no_dot.dest='wan'
+	uci set firewall.${C}_no_dot.dest_port='853'
+	uci set firewall.${C}_no_dot.proto='tcp udp'
+	uci set firewall.${C}_no_dot.target='REJECT'
+
+	# drop IPv6 forwarding outright -- the student segment is v4-only
+	uci set firewall.${C}_no_v6=rule
+	uci set firewall.${C}_no_v6.name="$C-drop-ipv6"
+	uci set firewall.${C}_no_v6.src="$C"
+	uci set firewall.${C}_no_v6.dest='*'
+	uci set firewall.${C}_no_v6.family='ipv6'
+	uci set firewall.${C}_no_v6.proto='all'
+	uci set firewall.${C}_no_v6.target='DROP'
+
+	# a laptop with a hardcoded 8.8.8.8 still gets filtered answers
+	uci set firewall.${C}_dnat53=redirect
+	uci set firewall.${C}_dnat53.name="$C-force-dns"
+	uci set firewall.${C}_dnat53.src="$C"
+	uci set firewall.${C}_dnat53.proto='tcp udp'
+	uci set firewall.${C}_dnat53.src_dport='53'
+	uci set firewall.${C}_dnat53.dest_ip="$CLASS_IP"
+	uci set firewall.${C}_dnat53.dest_port='53'
+	uci set firewall.${C}_dnat53.target='DNAT'
+	if ssid_off; then
+		for r in ${C}_allow_dns_t ${C}_allow_dns_u ${C}_allow_net_t \
+		         ${C}_allow_net_u ${C}_staffmac ${C}_no_dot ${C}_dnat53; do
+			uci -q get "firewall.$r" >/dev/null && uci set "firewall.$r.enabled=0"
+		done
+	fi
+	# ...but never hijack staff DNS (fw4 parse_mac honours a leading '!')
+	staff_macs | while read -r m; do
+		uci add_list "firewall.${C}_dnat53.src_mac=!$m"
+	done
+}
+
+_svc() {
+	sec="$1"; zone="$2"; proto="$3"; port="$4"; label="$5"
+	uci set "firewall.$sec=rule"
+	uci set "firewall.$sec.name=$label"
+	uci set "firewall.$sec.src=$zone"
+	uci set "firewall.$sec.proto=$proto"
+	uci set "firewall.$sec.dest_port=$port"
+	uci set "firewall.$sec.target=ACCEPT"
+}
+
+_allow() {
+	sec="$1"; set="$2"; tcp="$3"; udp="$4"; mk="${5:-}"
+	if [ -n "$tcp" ]; then
+		uci set "firewall.${sec}_t=rule"
+		uci set "firewall.${sec}_t.name=$C-allow-$set-tcp"
+		uci set "firewall.${sec}_t.src=$C"
+		uci set "firewall.${sec}_t.dest=wan"
+		uci set "firewall.${sec}_t.proto=tcp"
+		uci set "firewall.${sec}_t.ipset=$set"
+		uci set "firewall.${sec}_t.family=ipv4"
+		uci set "firewall.${sec}_t.target=ACCEPT"
+		[ -n "$mk" ] && uci set "firewall.${sec}_t.mark=$mk"
+		for p in $tcp; do uci add_list "firewall.${sec}_t.dest_port=$p"; done
+	fi
+	if [ -n "$udp" ]; then
+		uci set "firewall.${sec}_u=rule"
+		uci set "firewall.${sec}_u.name=$C-allow-$set-udp"
+		uci set "firewall.${sec}_u.src=$C"
+		uci set "firewall.${sec}_u.dest=wan"
+		uci set "firewall.${sec}_u.proto=udp"
+		uci set "firewall.${sec}_u.ipset=$set"
+		uci set "firewall.${sec}_u.family=ipv4"
+		uci set "firewall.${sec}_u.target=ACCEPT"
+		[ -n "$mk" ] && uci set "firewall.${sec}_u.mark=$mk"
+		for p in $udp; do uci add_list "firewall.${sec}_u.dest_port=$p"; done
+	fi
+}
+
+# fw4 loads ${C}_reg from a plain list, so regenerate it from the table.
+sync_macs() {
+	mkdir -p "$CONF_DIR"
+	{ echo "# generated from $(basename "$REGTSV") -- do not edit by hand"
+	  registrations | awk -F'\t' 'NF>=1 && $1 != "" {print $1}'
+	} > "$REGMACS"
+}
+
+cmd_apply() {
+	case "$KEY$STAFF_KEY" in
+		*CHANGEME*) die "set KEY and STAFF_KEY in $CONF first" ;;
+	esac
+	[ ${#KEY} -ge 8 ] || die "KEY must be at least 8 characters"
+	[ ${#STAFF_KEY} -ge 8 ] || die "STAFF_KEY must be at least 8 characters"
+
+	sync_macs
+	info "regenerating UCI from $CONF_DIR"
+	apply_network; apply_wireless; apply_dhcp; apply_firewall
+
+	info "checking ruleset"
+	if ! fw4 check >/tmp/classnet-fw4.err 2>&1; then
+		uci revert network wireless dhcp firewall
+		sed -n '1,20p' /tmp/classnet-fw4.err >&2
+		die "fw4 check failed -- changes reverted, nothing applied"
+	fi
+
+	# presence sampling: one line per associated MAC per minute
+	if [ -x /usr/sbin/classnet-presence ]; then
+		c=/etc/crontabs/root; touch "$c"
+		grep -q classnet-presence "$c" || echo "* * * * * /usr/sbin/classnet-presence" >> "$c"
+		/etc/init.d/cron enable >/dev/null 2>&1
+		/etc/init.d/cron restart >/dev/null 2>&1
+	fi
+
+	uci commit network; uci commit wireless; uci commit dhcp; uci commit firewall
+	info "reloading network"
+	/etc/init.d/network reload   >/dev/null 2>&1
+	/etc/init.d/dnsmasq restart  >/dev/null 2>&1
+	/etc/init.d/firewall restart >/dev/null 2>&1
+	wifi reload                  >/dev/null 2>&1
+	info "applied: $(domains | wc -l | tr -d ' ') allowed names, profiles: $ALWAYS_ON $PROFILES"
+}
+
+# ------------------------------------------------------------ ssid on/off ---
+
+cmd_enable()  { rm -f "$FLAG_OFF";  cmd_apply >/dev/null; echo "classnet SSID '$SSID' ENABLED (allowlist active)"; }
+cmd_disable() { touch "$FLAG_OFF";  cmd_apply >/dev/null; echo "classnet SSID '$SSID' DISABLED (staff SSID untouched)"; }
+
+cmd_unlock() {
+	touch "$FLAG_OPEN"; cmd_apply >/dev/null
+	echo "classnet UNLOCKED -- students have unrestricted Internet (deny list still enforced)."
+	echo "Re-lock with: classnet lock"
+}
+cmd_lock() {
+	rm -f "$FLAG_OPEN"; cmd_apply >/dev/null
+	echo "classnet LOCKED -- allowlist enforced"
+}
+
+# ---------------------------------------------------------------- status ----
+
+cmd_status() {
+	ssid_off && up=disabled || up=enabled
+	is_unlocked && lk="UNLOCKED (unrestricted)" || lk="locked (allowlist enforced)"
+	echo "SSID          : $SSID ($up), $STAFF_SSID (staff)"
+	echo "Policy        : $lk"
+	echo "Profiles      : $ALWAYS_ON $PROFILES"
+	echo "Allowed names : $(domains | wc -l | tr -d ' ')"
+	echo "Denied names  : $(denied | wc -l | tr -d ' ')"
+	echo "Staff MACs    : $(staff_macs | wc -l | tr -d ' ')"
+	echo "Set ${C}_dns4: $(_setcount ${C}_dns4) addresses learned"
+	echo "Set ${C}_net4: $(_setcount ${C}_net4) static entries"
+	echo
+	echo "Clients on $SSID:"
+	_clients br-${C} /tmp/dhcp.${C}.leases
+	echo "Clients on $STAFF_SSID:"
+	_clients br-${C}s /tmp/dhcp.leases
+}
+
+_setcount() {
+	nft list set inet fw4 "$1" 2>/dev/null \
+		| sed -n '/elements = {/,/}/p' | tr ',' '\n' \
+		| grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'
+}
+
+_clients() {
+	br="$1"; lease="$2"
+	for i in /sys/class/net/"$br"/brif/*; do
+		[ -e "$i" ] || continue
+		iw dev "$(basename "$i")" station dump 2>/dev/null \
+			| sed -n 's/^Station \([0-9a-f:]*\).*/\1/p'
+	done | sort -u | while read -r m; do
+		ip=$(awk -v m="$m" '$2==m{print $3}' "$lease" 2>/dev/null)
+		nm=$(awk -v m="$m" '$2==m{print $4}' "$lease" 2>/dev/null)
+		echo "  $m  ${ip:--}  ${nm:--}"
+	done | grep . || echo "  (none)"
+}
+
+# ------------------------------------------------------------ list edits ----
+
+cmd_staff() {
+	case "${1:-list}" in
+	add) [ -n "${2:-}" ] || die "usage: classnet staff add <MAC>"
+		echo "$2" | grep -qiE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' || die "not a MAC: $2"
+		staff_macs | grep -qix "$2" && { echo "already present"; return; }
+		echo "$2" | tr 'A-Z' 'a-z' >> "$MACS"; echo "added $2"; cmd_apply ;;
+	del) [ -n "${2:-}" ] || die "usage: classnet staff del <MAC>"
+		grep -vix "$2" "$MACS" > "$MACS.new" && mv "$MACS.new" "$MACS"
+		echo "removed $2"; cmd_apply ;;
+	list) staff_macs ;;
+	*) die "usage: classnet staff add|del|list [MAC]" ;;
+	esac
+}
+
+cmd_allow() {
+	case "${1:-list}" in
+	add) [ -n "${2:-}" ] || die "usage: classnet allow add <domain> [profile]"
+		if [ -n "${3:-}" ]; then
+			f=$(ls "$ALLOW_DIR"/*-"$3".list 2>/dev/null | head -1)
+			[ -n "$f" ] || die "no such profile: $3"
+		else
+			f="$ALLOW_DIR/99-local.list"
+			[ -f "$f" ] || echo "# profile: local -- added with 'classnet allow add'" > "$f"
+		fi
+		grep -qxF "$2" "$f" 2>/dev/null && { echo "already present in $(basename "$f")"; return; }
+		echo "$2" >> "$f"; echo "added $2 to $(basename "$f")"; cmd_apply ;;
+	del) [ -n "${2:-}" ] || die "usage: classnet allow del <domain>"
+		for f in "$ALLOW_DIR"/*.list; do
+			grep -qxF "$2" "$f" 2>/dev/null || continue
+			grep -vxF "$2" "$f" > "$f.new" && mv "$f.new" "$f"
+			echo "removed $2 from $(basename "$f")"
+		done; cmd_apply ;;
+	list) for f in "$ALLOW_DIR"/*.list; do
+			p=$(profile_of "$f")
+			profile_enabled "$p" && st="on " || st="off"
+			strip "$f" | sed "s/^/[$st] $p  /"
+		done ;;
+	*) die "usage: classnet allow add|del|list [domain] [profile]" ;;
+	esac
+}
+
+cmd_profile() {
+	case "${1:-list}" in
+	enable|disable)
+		[ -n "${2:-}" ] || die "usage: classnet profile $1 <name>"
+		for p in $ALWAYS_ON; do [ "$p" = "$2" ] && die "'$2' is always on"; done
+		ls "$ALLOW_DIR"/*-"$2".list >/dev/null 2>&1 || die "no such profile: $2"
+		new=""
+		for p in $PROFILES; do [ "$p" = "$2" ] || new="$new $p"; done
+		[ "$1" = enable ] && new="$new $2"
+		new=$(echo "$new" | tr -s ' ' | sed 's/^ //;s/ $//')
+		sed -i "s/^PROFILES=.*/PROFILES=\"$new\"/" "$CONF"
+		PROFILES="$new"; echo "profiles: $ALWAYS_ON $PROFILES"; cmd_apply ;;
+	list)
+		for f in "$ALLOW_DIR"/*.list; do
+			p=$(profile_of "$f")
+			st=off
+			profile_enabled "$p" && st=on
+			for a in $ALWAYS_ON; do [ "$a" = "$p" ] && st=always; done
+			printf '  %-8s %-7s %s names\n' "$p" "$st" "$(strip "$f" | wc -l | tr -d ' ')"
+		done ;;
+	*) die "usage: classnet profile enable|disable|list [name]" ;;
+	esac
+}
+
+# ------------------------------------------------------------------ test ----
+
+cmd_test() {
+	rc=0
+	echo "== on-router checks =="
+	dnsmasq --test -C /var/etc/dnsmasq.conf.classnet >/dev/null 2>&1 \
+		&& echo "  ok   classnet dnsmasq config parses" \
+		|| { echo "  FAIL classnet dnsmasq config"; rc=1; }
+	fw4 check >/dev/null 2>&1 \
+		&& echo "  ok   fw4 ruleset compiles" || { echo "  FAIL fw4 check"; rc=1; }
+	nft list set inet fw4 ${C}_net4 2>/dev/null | grep -q 185.199.108.153 \
+		&& echo "  ok   static Pages set seeded" || { echo "  FAIL ${C}_net4 empty"; rc=1; }
+	nft list set inet fw4 ${C}_dns4 >/dev/null 2>&1 \
+		&& echo "  ok   DNS-learned set exists" || { echo "  FAIL ${C}_dns4 missing"; rc=1; }
+	pgrep -f "dnsmasq.conf.$C" >/dev/null \
+		&& echo "  ok   classnet resolver running" || { echo "  FAIL resolver not running"; rc=1; }
+
+	echo "== resolver behaviour (asking $CLASS_IP directly) =="
+	_q()  { nslookup "$1" "$CLASS_IP" 2>/dev/null | sed -n '/^Name:/,$p' | grep -c '^Address'; }
+	for d in github.com usfca-cs-tools.github.io; do
+		[ "$(_q "$d")" -gt 0 ] && echo "  ok   $d resolves" || { echo "  FAIL $d should resolve"; rc=1; }
+	done
+	for d in chatgpt.com api.githubcopilot.com api.anthropic.com doc.rust-lang.org; do
+		[ "$(_q "$d")" -eq 0 ] && echo "  ok   $d refused" || { echo "  FAIL $d should NOT resolve"; rc=1; }
+	done
+	[ $rc = 0 ] && echo "ALL PASS" || echo "FAILURES -- see above"
+	return $rc
+}
+
+cmd_debug() {
+	case "${1:-}" in
+	on)  touch "$FLAG_DBG"; cmd_apply >/dev/null
+	     echo "query logging ON for the student resolver."
+	     echo "Reproduce the problem, then: classnet log   (turn off with: classnet debug off)" ;;
+	off) rm -f "$FLAG_DBG"; cmd_apply >/dev/null; echo "query logging OFF" ;;
+	*)   is_debug && echo "query logging is ON" || echo "query logging is OFF"
+	     echo "usage: classnet debug on|off" ;;
+	esac
+}
+
+# What the student resolver refused, newest last. With `classnet debug on` this
+# names every host a laptop asked for and did not get -- which is how you find
+# the one CDN or upload bucket a site needs that the allowlist is missing.
+
+# ------------------------------------------------------- presence/identity --
+
+# The AP already knows how long every station has been associated, so presence
+# needs no client software, no browser tab and nothing for a student to run.
+# `connected time` resets on a roam between the 2.4 and 5 GHz APs, so take the
+# largest value seen for a MAC across both.
+_stations() {
+	for i in /sys/class/net/br-${C}/brif/*; do
+		[ -e "$i" ] || continue
+		iw dev "$(basename "$i")" station dump 2>/dev/null | awk '
+			/^Station/       { mac=$2 }
+			/connected time/ { print mac, $3 }'
+	done | awk '{ if ($2 > t[$1]) t[$1]=$2 } END { for (m in t) print m, t[m] }'
+}
+
+_ident() {  # mac -> "github  name <email>"  or empty
+	registrations | awk -F'\t' -v m="$1" '$1==m { printf "%s\t%s\t%s", $4, $3, $2; exit }'
+}
+
+# The full identity on one line, in the shape the roster and exports use.
+# usf_user is derived rather than stored: it is the local part of the address
+# Google verified, so it cannot drift out of step with it.
+_identline() {
+	id=$(_ident "$1"); [ -n "$id" ] || return 1
+	gh=$(echo "$id" | cut -f1); nm=$(echo "$id" | cut -f2); em=$(echo "$id" | cut -f3)
+	printf 'usf_user=%s  email=%s  name=%s  github=%s' "${em%%@*}" "$em" "$nm" "$gh"
+}
+
+_hms() { awk -v s="${1:-0}" 'BEGIN{printf "%d:%02d", int(s/3600), int(s%3600/60)}'; }
+
+cmd_who() {
+	# --github: bare usernames, one per line, for scripting (classnet-release)
+	if [ "${1:-}" = "--github" ]; then
+		_stations | while read -r mac _; do
+			id=$(_ident "$mac"); [ -n "$id" ] && echo "$id" | cut -f1
+		done | sort -u
+		return
+	fi
+	gate_on && g="on" || g="OFF"
+	echo "In the room now  (registration gate: $g)"
+	echo
+	_stations | sort -k2 -rn | while read -r mac secs; do
+		line=$(_identline "$mac") \
+			&& printf '  %-18s %-6s %s\n' "$mac" "$(_hms "$secs")" "$line" \
+			|| printf '  %-18s %-6s %s\n' "$mac" "$(_hms "$secs")" "(unregistered -- has not signed in)"
+	done
+	n=$(_stations | wc -l | tr -d ' ')
+	u=$(_stations | while read -r m _; do [ -z "$(_ident "$m")" ] && echo x; done | wc -l | tr -d ' ')
+	echo
+	echo "  $n device(s) present, $u unregistered, $(registrations | wc -l | tr -d ' ') registered all-time"
+}
+
+cmd_roster() {
+	# Validation lives in the portal binary so the check and the live lookup
+	# share one parser -- a roster that checks clean cannot then fail at the door.
+	if [ "${1:-}" = "check" ]; then
+		[ -x /usr/sbin/classnet-portal ] || die "classnet-portal is not installed"
+		/usr/sbin/classnet-portal --check-roster
+		return $?
+	fi
+	if [ "${1:-}" = "--github" ]; then
+		registrations | awk -F'\t' 'NF>=4 && $4!="" {print $4}' | sort -u
+		return
+	fi
+	printf '  %-18s %-10s %-16s %-26s %s\n' MAC USF GITHUB EMAIL NAME
+	registrations | sort -t"$(printf '\t')" -k4 | while IFS="$(printf '\t')" read -r mac email name gh ts; do
+		printf '  %-18s %-10s %-16s %-26s %s\n' "$mac" "${email%%@*}" "$gh" "$email" "$name"
+	done
+	echo
+	echo "  $(registrations | wc -l | tr -d ' ') device(s) registered"
+}
+
+cmd_register() {
+	[ $# -ge 3 ] || die "usage: classnet register <MAC> <usf-email> <github-user> [full name]"
+	mac=$(echo "$1" | tr 'A-Z' 'a-z')
+	echo "$mac" | grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' || die "not a MAC: $1"
+	case "$2" in *@*usfca.edu) ;; *) die "not a usfca.edu address: $2" ;; esac
+    email="$2"; gh="$3"; shift 3; name="${*:-}"
+	[ -n "$name" ] || name="$gh"
+	mkdir -p "$CONF_DIR"
+	[ -f "$REGTSV" ] || printf '# mac\temail\tname\tgithub\tregistered_at\n' > "$REGTSV"
+	if registrations | awk -F'\t' -v m="$mac" '$1==m{f=1} END{exit !f}'; then
+		cp "$REGTSV" "$REGTSV.bak" 2>/dev/null
+		grep -v "^$mac	" "$REGTSV" > "$REGTSV.new" && mv "$REGTSV.new" "$REGTSV"
+		echo "  replacing existing registration for $mac"
+	fi
+	printf '%s\t%s\t%s\t%s\t%s\n' "$mac" "$email" "$name" "$gh" "$(date +%s)" >> "$REGTSV"
+	sync_macs
+	# live, so the student is unblocked without a ruleset reload
+	nft add element inet fw4 ${C}_reg "{ $mac }" 2>/dev/null
+	echo "registered $mac -> $gh <$email>"
+}
+
+cmd_unregister() {
+	[ -n "${1:-}" ] || die "usage: classnet unregister <MAC>"
+	mac=$(echo "$1" | tr 'A-Z' 'a-z')
+	before=$(registrations | wc -l | tr -d ' ')
+	if ! registrations | awk -F'\t' -v m="$mac" '$1==m{f=1} END{exit !f}'; then
+		echo "not registered: $mac"
+		return 0
+	fi
+	cp "$REGTSV" "$REGTSV.bak" 2>/dev/null
+	grep -v "^$mac	" "$REGTSV" > "$REGTSV.new" 2>/dev/null
+	# This file is student identity data. A rewrite that removes anything other
+	# than the one row asked for is a bug, and restoring from the snapshot is
+	# cheaper than reconstructing a roster mid-session.
+	# wc, not grep -c: grep exits 1 when it counts zero, so `grep -c ... || echo 0`
+	# emitted "0\n0" and the numeric test then failed with "bad number" -- which
+	# an `if` reads as false, so the guard quietly waved the write through.
+	after=$(grep -v '^#' "$REGTSV.new" 2>/dev/null | grep -v '^$' | wc -l | tr -d ' ')
+	if [ "$after" -ne $((before - 1)) ]; then
+		rm -f "$REGTSV.new"
+		die "refusing to write: $before row(s) would become $after, expected $((before - 1)). $REGTSV is unchanged."
+	fi
+	mv "$REGTSV.new" "$REGTSV"
+	sync_macs
+	nft delete element inet fw4 ${C}_reg "{ $mac }" 2>/dev/null
+	echo "unregistered $mac -- it will meet the portal again on its next request"
+}
+
+cmd_attendance() {
+	d="${1:-$(date +%Y-%m-%d)}"
+	f="$ATTEND/$d.log"
+	[ -f "$f" ] || die "no attendance log for $d (looked in $f)"
+	echo "Attendance for $d"
+	printf '  %-16s %-7s %-7s %s\n' GITHUB FIRST LAST TOTAL
+	# Samples are one per minute per MAC. Stitch them into intervals, tolerating
+	# a gap of up to GAPMIN minutes -- a closed lid or a roam between APs is a
+	# gap, not a departure, and reporting those as separate visits would be wrong.
+	awk -v gap="${GAPMIN:-10}" '
+		{ ts=$1; mac=$2
+		  if (!(mac in first)) { first[mac]=ts; }
+		  if (mac in last && ts-last[mac] > gap*60) { total[mac]+=acc[mac]; acc[mac]=0; starts[mac]=ts }
+		  else if (mac in last) { acc[mac]+=ts-last[mac] }
+		  last[mac]=ts }
+		END { for (m in last) printf "%s\t%d\t%d\t%d\n", m, first[m], last[m], total[m]+acc[m] }
+	' "$f" | sort -k4 -rn | while IFS="$(printf '\t')" read -r mac fs ls tot; do
+		id=$(_ident "$mac"); gh=$(echo "$id" | cut -f1)
+		[ -n "$gh" ] || gh="($mac)"
+		printf '  %-16s %-7s %-7s %s\n' "$gh" \
+			"$(date -d "@$fs" +%H:%M 2>/dev/null || date -r "$fs" +%H:%M)" \
+			"$(date -d "@$ls" +%H:%M 2>/dev/null || date -r "$ls" +%H:%M)" \
+			"$(_hms "$tot")"
+	done
+}
+
+cmd_export() {
+	d="${1:-$(date +%Y-%m-%d)}"
+	echo "date,usf_user,github,email,name,first_seen,last_seen,minutes"
+	f="$ATTEND/$d.log"; [ -f "$f" ] || return 0
+	awk -v gap="${GAPMIN:-10}" '
+		{ ts=$1; mac=$2
+		  if (!(mac in first)) first[mac]=ts
+		  if (mac in last && ts-last[mac] <= gap*60) acc[mac]+=ts-last[mac]
+		  last[mac]=ts }
+		END { for (m in last) printf "%s\t%d\t%d\t%d\n", m, first[m], last[m], acc[m] }
+	' "$f" | while IFS="$(printf '\t')" read -r mac fs ls tot; do
+		id=$(_ident "$mac")
+		gh=$(echo "$id" | cut -f1); nm=$(echo "$id" | cut -f2); em=$(echo "$id" | cut -f3)
+		printf '%s,%s,%s,"%s",%s,%s,%d\n' "$d" "${gh:-}" "${em:-}" "${nm:-}" \
+			"$(date -d "@$fs" +%H:%M 2>/dev/null || date -r "$fs" +%H:%M)" \
+			"$(date -d "@$ls" +%H:%M 2>/dev/null || date -r "$ls" +%H:%M)" \
+			"$((tot/60))"
+	done
+}
+
+# Start-of-semester clean slate. Registrations are identity records about real
+# students, so this asks first and names what it is about to erase.
+cmd_forget() {
+	what="${1:-}"
+	case "$what" in
+	registrations|attendance|leases|all) ;;
+	*) echo "usage: classnet forget registrations|attendance|leases|all"
+	   echo
+	   echo "  registrations  every MAC->student binding ($(registrations | wc -l | tr -d " ") now)"
+	   echo "  attendance     every session log ($(ls "$ATTEND" 2>/dev/null | wc -l | tr -d " ") day(s))"
+	   echo "  leases         DHCP leases on the student network"
+	   echo "  all            all three"
+	   return 1 ;;
+	esac
+	printf "Erase %s? This cannot be undone. [y/N] " "$what"
+	read -r a; case "$a" in y|Y) ;; *) echo "cancelled"; return 0 ;; esac
+
+	if [ "$what" = registrations ] || [ "$what" = all ]; then
+		printf '# mac\temail\tname\tgithub\tregistered_at\n' > "$REGTSV"
+		sync_macs
+		nft flush set inet fw4 ${C}_reg 2>/dev/null
+		echo "  registrations cleared -- every device meets the portal again"
+	fi
+	if [ "$what" = attendance ] || [ "$what" = all ]; then
+		rm -f "$ATTEND"/*.log 2>/dev/null
+		echo "  attendance logs cleared"
+	fi
+	if [ "$what" = leases ] || [ "$what" = all ]; then
+		: > /tmp/dhcp.${C}.leases
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1
+		echo "  DHCP leases cleared"
+	fi
+}
+
+cmd_gate() {
+	case "${1:-}" in
+	on)  touch "$FLAG_GATE"; cmd_apply >/dev/null
+	     echo "registration gate ON -- an unregistered device now reaches only"
+	     echo "the sign-in garden. Devices already connected are cut off until"
+	     echo "they register. Manual override: classnet register <mac> <email> <gh>" ;;
+	off) rm -f "$FLAG_GATE"; cmd_apply >/dev/null
+	     echo "registration gate OFF -- every device on classnet gets the allowlist" ;;
+	*)   gate_on && echo "registration gate is ON" || echo "registration gate is OFF"
+	     echo "usage: classnet gate on|off" ;;
+	esac
+}
+
+cmd_log() {
+	if is_debug; then
+		echo "== names refused to students (config /var/etc/dnsmasq.conf.$C) =="
+		logread | grep -F "dnsmasq[" | grep -E "config .* is NXDOMAIN|/#/" \
+			| sed -nE 's/.*config ([^ ]+) is.*/  \1/p' | awk '!s[$0]++' | tail -40
+		echo "== allowed lookups =="
+		logread | grep -F "dnsmasq[" | sed -nE 's/.*reply ([^ ]+) is .*/  \1/p' \
+			| awk '!s[$0]++' | tail -20
+	else
+		echo "(run 'classnet debug on' first to log which names are being refused)"
+	fi
+	echo "== recent wifi/auth events =="
+	logread | grep -iE "hostapd|PSK-MISMATCH" | tail -10
+}
+
+usage() {
+	cat <<EOF
+classnet -- CS 326 classroom network control
+
+  classnet enable | disable        turn the student SSID (and its rules) on/off
+  classnet lock   | unlock         enforce / suspend the allowlist, SSID stays up
+  classnet status                  what is on, what is connected, set sizes
+  classnet apply                   regenerate all config from /etc/classnet
+  classnet test                    self-check: resolver, ruleset, sets
+  classnet staff   add|del|list <MAC>
+  classnet allow   add|del|list <domain> [profile]
+  classnet profile enable|disable|list <name>
+  classnet who                     who is in the room right now, and for how long
+  classnet roster                  every registered student and device
+  classnet roster check            validate roster.csv against GitHub
+  classnet attendance [date]       per-student intervals and totals for a session
+  classnet export [date]           the same as CSV
+  classnet gate on|off             require registration before the allowlist applies
+  classnet register <MAC> <usf-email> <github> [name]     bind a device by hand
+  classnet unregister <MAC>        send a device back to the portal
+  classnet forget registrations|attendance|leases|all   clean slate
+  classnet debug on|off            log which names the student resolver refuses
+  classnet log                     refused names, allowed lookups, wifi events
+EOF
+}
+
+case "${1:-}" in
+	enable) cmd_enable ;; disable) cmd_disable ;;
+	lock) cmd_lock ;;     unlock) cmd_unlock ;;
+	status) cmd_status ;; apply) cmd_apply ;;  test) cmd_test ;;
+	who) shift; cmd_who "$@" ;;   roster) shift; cmd_roster "$@" ;;
+	gate) shift; cmd_gate "$@" ;;
+	register) shift; cmd_register "$@" ;;
+	unregister) shift; cmd_unregister "$@" ;;
+	forget) shift; cmd_forget "$@" ;;
+	attendance) shift; cmd_attendance "$@" ;;
+	export) shift; cmd_export "$@" ;;
+	staff) shift; cmd_staff "$@" ;;
+	allow) shift; cmd_allow "$@" ;;
+	profile) shift; cmd_profile "$@" ;;
+	log) cmd_log ;;
+	debug) shift; cmd_debug "$@" ;;
+	*) usage; exit 1 ;;
+esac

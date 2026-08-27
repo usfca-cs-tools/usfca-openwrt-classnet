@@ -1,0 +1,2 @@
+# Always on. Infrastructure names that must resolve for the network to behave.
+# (Deliberately tiny -- everything else is denied by default.)

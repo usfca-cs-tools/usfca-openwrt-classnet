@@ -1,0 +1,10 @@
+# Instructor / TA MAC addresses that get full Internet access even on the
+# student `cs326` SSID.  One per line.  Manage with:
+#   classnet staff add aa:bb:cc:dd:ee:ff
+#   classnet staff del aa:bb:cc:dd:ee:ff
+#   classnet staff list
+#
+# NOTE: turn OFF "Private Wi-Fi Address" (macOS/iOS) or "Randomised MAC"
+# (Android/Windows) for this SSID, or the address will not match.
+# MACs are cleartext on the air and spoofable -- the cs326-staff SSID is the
+# stronger path; this list is the convenience path.

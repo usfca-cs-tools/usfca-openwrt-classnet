@@ -1,0 +1,18 @@
+# Forced NXDOMAIN. Evaluated ahead of any allow entry of lower specificity.
+#
+# IMPORTANT dnsmasq semantic: an allow entry matches the domain AND every
+# subdomain of it. So `github.com` in 10-github.list implicitly permits every
+# *.github.com host. Anything under an allowed parent that you do NOT want
+# has to be named here explicitly -- that is what this file is for.
+#
+# Copilot. api.githubcopilot.com is a CNAME to glb-*.github.com, which lands
+# in 140.82.112.0/20 -- GitHub's own range -- so hostname denial is the only
+# thing that actually stops it.
+githubcopilot.com
+copilot-proxy.githubusercontent.com
+copilot-telemetry.githubusercontent.com
+copilot-telemetry-service.githubusercontent.com
+
+# Tarball/zip endpoint. Reachable only as a side effect of allowing
+# github.com; git clone/pull/push never touch it.
+codeload.github.com

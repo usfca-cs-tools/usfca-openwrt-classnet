@@ -1,0 +1,24 @@
+# The pre-auth walled garden: the ONLY hosts an unregistered device may reach.
+#
+# Deliberately not in allow.d/ -- these must resolve for everyone but be
+# reachable only by devices that have not registered yet. A registered student
+# is blocked from them, which is the point: www.google.com is Google search.
+#
+# Google's device flow is what makes this list necessary. It needs no redirect
+# URI, which matters because Google refuses private-IP redirect targets, so a
+# portal at 192.168.63.1 could never be one. The cost is that the code is
+# entered at www.google.com/device.
+accounts.google.com
+www.google.com
+
+# NOT the google.com apex. It was tried, and the query log showed exactly what
+# suffix matching admits to a not-yet-registered device: mail.google.com,
+# chat.google.com and play.google.com all resolved. Google Chat is a chat
+# client, which integrity-policy.md bans during a session, so the apex costs
+# more than the dead end it fixes.
+#
+# The portal therefore names the host explicitly -- https://www.google.com/device
+# -- and a student can always approve the code from a phone instead, which is
+# the reliable path when a laptop browser misbehaves.
+www.gstatic.com
+ssl.gstatic.com

@@ -1,0 +1,18 @@
+# The class list: who is supposed to be in the room. Used only by
+# `classnet roster check`, to report students who have no GitHub username on file
+# and will therefore be turned away at the sign-in portal.
+#
+# A Canvas gradebook export works unchanged -- keep the header, and the
+# "Points Possible" row Canvas puts second is skipped automatically:
+#
+#   Student,ID,SIS User ID,SIS Login ID,Section
+#   "    Points Possible",,,,
+#   "Smith, Jane",12345,20123456,jsmith,CS 326-01
+#
+# A plain list of addresses or usernames, one per line, works too.
+# Matching ignores the domain, so a list of usernames matches a roster of
+# addresses and vice versa.
+#
+# Install as /etc/classnet/enrolled.csv (gitignored: it is student data).
+jsmith@dons.usfca.edu
+alopez@dons.usfca.edu

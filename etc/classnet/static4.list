@@ -1,0 +1,12 @@
+# Seeded into nft set cs326_net4 at firewall start.
+#
+# The GitHub Pages edge only. Safe to pin by IP because -- unlike
+# 140.82.112.0/20, which also carries Copilot -- nothing but Pages lives here.
+# Keeps the course website reachable even for a laptop resolving over DoH
+# that never consults our resolver.
+185.199.108.153/32
+185.199.109.153/32
+185.199.110.153/32
+185.199.111.153/32
+192.30.252.153/32
+192.30.252.154/32

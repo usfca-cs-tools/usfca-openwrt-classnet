@@ -1,0 +1,19 @@
+# profile: chat   -- the class Zulip. OFF by default: chat is not reachable
+# from the student network during a session. Turn on with
+# `cs326 profile enable chat`, off again with `cs326 profile disable chat`.
+#
+# Three hosts, not one: the realm serves the app shell, static.zulipchat.com
+# serves its JS/CSS (nothing renders without it), and gravatar serves the
+# message avatars.
+#
+# Named exactly rather than allowing the zulipchat.com parent, which would
+# admit every other organisation's Zulip too.
+usfca-cs326-f26.zulipchat.com
+static.zulipchat.com
+secure.gravatar.com
+
+# If image/file attachments fail in class, Zulip Cloud redirects
+# /user_uploads/ to a presigned S3 URL on its own bucket host. Find the exact
+# name with `cs326 debug on` and `cs326 log` while reproducing, then
+# `cs326 allow add <that-host> chat`. Do NOT allow s3.amazonaws.com broadly --
+# that is every bucket on AWS.

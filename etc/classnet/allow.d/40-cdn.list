@@ -1,0 +1,8 @@
+# profile: cdn
+# Without these the course site is broken: reveal.js IS the slide renderer,
+# so all 26 lecture decks render as blank pages.
+unpkg.com               # reveal.js, mermaid
+cdn.jsdelivr.net        # MathJax
+cdnjs.cloudflare.com    # highlight.js theme
+fonts.googleapis.com
+fonts.gstatic.com

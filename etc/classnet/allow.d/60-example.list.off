@@ -1,0 +1,16 @@
+# profile: example   -- a template for your own course.
+#
+# Copy to 60-<name>.list, list one hostname per line, then add <name> to
+# PROFILES in classnet.conf and run `classnet apply`.
+#
+# Two things to know before you write one:
+#
+#  * Entries match subdomains. `example.com` admits every *.example.com. That
+#    is usually more than you meant -- name the exact hosts instead, and put
+#    anything you want excluded in deny.list, which wins.
+#  * A site is not reachable until something resolves it through this router.
+#    If a page half-loads, run `classnet debug on`, reload it, then
+#    `classnet log` to see exactly which host was refused.
+#
+# pypi.org
+# files.pythonhosted.org

@@ -1,0 +1,41 @@
+# classnet -- one restricted classroom network on an OpenWrt router.
+# Copy to classnet.conf and edit. This is the only file most courses change.
+
+# ---- The class -------------------------------------------------------------
+# Drives everything generated: SSID, firewall zones, nftables sets, bridge
+# names, UCI section names. 2-11 lowercase letters/digits, starting with a
+# letter -- a Linux interface name caps at 15 characters and "br-" plus this
+# has to fit.
+CLASS="cs326"
+
+# ---- Student network -------------------------------------------------------
+SSID="cs326"
+KEY="CHANGEME-at-least-8-characters"
+NET="192.168.63"          # x.y.z -> router at x.y.z.1, students from .100
+
+# ---- Instructor / TA network ----------------------------------------------
+STAFF_SSID="cs326-staff"
+STAFF_KEY="CHANGEME-different-from-the-student-key"
+STAFF_NET="192.168.64"
+STAFF_HIDDEN="0"          # 1 = do not broadcast
+
+# ---- Radios ----------------------------------------------------------------
+COUNTRY="US"
+
+# ---- Upstream resolvers, used for allowlisted names only -------------------
+UPSTREAM_DNS="1.1.1.1 9.9.9.9"
+
+# ---- Who may register ------------------------------------------------------
+# Checked server-side against the Google account that signs in. Accepts the
+# domain and any subdomain, so usfca.edu admits dons.usfca.edu and cs.usfca.edu.
+ALLOWED_DOMAIN="usfca.edu"
+
+# ---- What students may reach ----------------------------------------------
+# Each name is a file in allow.d/. core, github and site are always on.
+# Shipped: rust docs cdn portal chat setup
+# Write your own: put hosts in allow.d/60-<name>.list and add <name> here.
+PROFILES="rust docs cdn portal"
+
+# Ports students may reach on allowlisted hosts.
+ALLOW_TCP="22 80 443"
+ALLOW_UDP="443"
