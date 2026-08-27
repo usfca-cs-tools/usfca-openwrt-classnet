@@ -18,22 +18,31 @@ router ──────────┤
 ## What a student does
 
 **Once, on each laptop they bring.** They join the class Wi-Fi and a sign-in
-sheet opens by itself. They sign in with their university Google account,
-approving a short code — on the laptop, or on their phone, whichever is easier.
-That is the whole thing, and it takes about thirty seconds.
+sheet opens by itself. One button, their university Google account, done —
+about thirty seconds, entirely on the laptop in front of them.
 
 ```
- ┌──────────────────────────────┐
- │  CS 245 sign-in              │
- │                              │
- │  1. Go to google.com/device  │
- │  2. Enter this code:         │
- │                              │
- │      ┌────────────────┐      │
- │      │  WTR-QRL-JBQQ  │      │
- │      └────────────────┘      │
- └──────────────────────────────┘
+ ┌────────────────────────────────┐
+ │  CS 245 sign-in                │
+ │                                │
+ │      ┌──────────────────┐      │
+ │      │  WTR-QRL-JBQQ    │      │
+ │      └──────────────────┘      │
+ │                                │
+ │  ┌──────────────────────────┐  │
+ │  │   Sign in with Google    │  │
+ │  └──────────────────────────┘  │
+ └────────────────────────────────┘
 ```
+
+**No second device is needed.** The button opens Google in the same window with
+the code already filled in. If a captive-portal sheet refuses to follow links —
+some do — they can open Safari and go to `www.google.com/device` instead, and
+a phone works but is never required.
+
+The exchange with Google runs on the router, not in the page, so a student who
+closes the sheet or wanders off mid-sign-in is still let through the moment they
+approve. Nothing depends on that window staying open.
 
 **Every session after that: nothing.** They open their laptop, it joins, and it
 is recognised. No command to run, no page to visit, no code to type. Their

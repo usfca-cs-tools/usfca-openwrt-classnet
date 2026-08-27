@@ -529,112 +529,115 @@ them a moment and you do not need to do anything else.</p>\
             if let Ok(mut m) = state.lock() {
                 m.insert(mac.clone(), p.clone());
             }
+            complete_in_background(cfg.clone(), state.clone(), mac.clone());
             p
         }
     };
 
+    // Same window, code pre-filled. The captive-portal sheet frequently cannot
+    // open a new window, which stranded students on a page whose button did
+    // nothing; navigating in place works, and the background poller means
+    // leaving this page no longer abandons the registration.
+    let link = format!("{}?user_code={}", p.verify_url, urlenc(&p.user_code));
     let html = format!(
         "<p class=lead>Sign in with your <b>USF</b> account to join the class \
-network. You only do this once on this laptop.</p>\
-<ol><li>Go to <b>{}</b> in a browser, or on your phone</li>\
-<li>Enter this code:</li></ol>\
+network. You only do this once on this laptop, and you can do it right here.</p>\
 <span class=code>{}</span>\
-<a class=btn href='{}' target=_blank rel=noopener>Open {}</a>\
-<p class=muted>If that button does nothing, this window cannot open links \
-&mdash; type the address into Safari or Chrome instead, or use your phone. \
-This page finishes by itself once you are approved.</p>\
+<a class=btn href='{}'>Sign in with Google</a>\
+<p class=muted>That opens Google in this window with the code already filled in. \
+If the button does nothing, open Safari or Chrome and go to \
+<b>www.google.com/device</b> &mdash; the <b>www.</b> matters &mdash; then enter \
+the code above. A phone works too, but you do not need one.</p>\
+<p class=muted>You can close this window once you have approved it. The network \
+lets you through on its own.</p>\
 <script>setInterval(async()=>{{try{{const r=await fetch('/status');\
-const j=await r.json();if(j.state==='done'||j.state==='problem'||j.state==='rejected')location.reload();}}\
+const j=await r.json();if(j.state==='done'||j.state==='problem')location.reload();}}\
 catch(e){{}}}},{}000);</script>",
-        esc(&p.verify_url), esc(&p.user_code), esc(&p.verify_url),
-        esc(&p.verify_url), p.interval.max(3));
+        esc(&p.user_code), esc(&link), p.interval.max(3));
     respond(s, "200 OK", "text/html", &page("CS 326 sign-in", &html));
 }
 
-fn poll_flow(s: TcpStream, cfg: Arc<Config>, state: State, mac: String) {
-    let Some(p) = state.lock().ok().and_then(|m| m.get(&mac).cloned()) else {
-        return respond(s, "200 OK", "application/json", "{\"state\":\"none\"}");
-    };
-    if !p.email.is_empty() {
-        return respond(s, "200 OK", "application/json", "{\"state\":\"github\"}");
+/// Report where this device stands. Cheap and side-effect free: the exchange
+/// with Google happens on a background thread, so a student who navigates away
+/// from this page still gets registered.
+fn poll_flow(s: TcpStream, _cfg: Arc<Config>, state: State, mac: String) {
+    if is_registered(&mac).is_some() {
+        return respond(s, "200 OK", "application/json", "{\"state\":\"done\"}");
     }
-    if p.expires_at < now() {
-        return respond(s, "200 OK", "application/json", "{\"state\":\"expired\"}");
-    }
-
-    let post = format!(
-        "client_id={}&client_secret={}&device_code={}&grant_type={}",
-        urlenc(&cfg.client_id), urlenc(&cfg.client_secret), urlenc(&p.device_code),
-        urlenc("urn:ietf:params:oauth:grant-type:device_code"));
-
-    // A miss here is "not approved yet": uclient-fetch reports HTTP errors as a
-    // failure with no body, which is precisely the 428 Google sends while
-    // waiting. Anything else times out with the device code.
-    let Some(tok) = https(TOKEN_URL, Some(&post)) else {
-        return respond(s, "200 OK", "application/json", "{\"state\":\"pending\"}");
+    let st = match state.lock().ok().and_then(|m| m.get(&mac).cloned()) {
+        None => "none",
+        Some(p) if !p.problem.is_empty() => "problem",
+        Some(p) if p.expires_at < now() => "expired",
+        Some(_) => "pending",
     };
-    println!("google token exchange succeeded for mac={mac}");
-    let Some(access) = jget(&tok, "access_token") else {
-        return respond(s, "200 OK", "application/json", "{\"state\":\"pending\"}");
-    };
-
-    let Some(info) = https(&format!("{USERINFO_URL}?access_token={}", urlenc(&access)), None) else {
-        return respond(s, "200 OK", "application/json", "{\"state\":\"pending\"}");
-    };
-    let email = jget(&info, "email").unwrap_or_default();
-    let name = jget(&info, "name").unwrap_or_else(|| email.clone());
-    let verified = jget(&info, "email_verified").map(|v| v == "true").unwrap_or(false);
-
-    println!("google identity for mac={mac}: {email} verified={verified}");
-    if !verified || !domain_ok(&email, &cfg.domain) {
-        if let Ok(mut m) = state.lock() { m.remove(&mac); }
-        return respond(s, "200 OK", "application/json",
-            &format!("{{\"state\":\"rejected\",\"domain\":\"{}\"}}", esc(&cfg.domain)));
-    }
-
-    // The roster is authoritative. A student it does not know is not asked to
-    // type their own GitHub username -- a typo there would bind the wrong
-    // handle and surface later as a release that silently went nowhere. They
-    // are told to see the instructor, who registers them by hand.
-    let problem = match roster_lookup(&email) {
-        None => {
-            println!("no roster entry for {email} -- cannot register {mac}");
-            format!("We do not have a GitHub username on file for {email}.")
-        }
-        Some(gh) => {
-            if https(&format!("https://api.github.com/users/{}", urlenc(&gh)), None).is_none() {
-                println!("roster maps {email} to '{gh}', which GitHub does not have");
-                format!("The roster lists your GitHub username as \"{gh}\", but GitHub has no such user.")
-            } else {
-                match register(&mac, &email, &name, &gh, &cfg.class) {
-                    Ok(()) => {
-                        println!("registered {mac} as {gh} <{email}> from the roster");
-                        if let Ok(mut m) = state.lock() { m.remove(&mac); }
-                        return respond(s, "200 OK", "application/json", "{\"state\":\"done\"}");
-                    }
-                    Err(e) => {
-                        println!("registration failed for {mac}: {e}");
-                        format!("Could not save the registration: {e}")
-                    }
-                }
-            }
-        }
-    };
-
-    if let Ok(mut m) = state.lock() {
-        if let Some(e) = m.get_mut(&mac) {
-            e.email = email;
-            e.name = name;
-            e.problem = problem;
-        }
-    }
-    respond(s, "200 OK", "application/json", "{\"state\":\"problem\"}");
+    respond(s, "200 OK", "application/json", &format!("{{\"state\":\"{st}\"}}"))
 }
 
-/// The class list: who is supposed to be here. Takes a Canvas gradebook export
-/// unchanged -- it locates the identity column by header name and skips the
-/// "Points Possible" pseudo-row Canvas puts second, which is not a student and
-/// would otherwise be reported as missing every single time.
+/// Poll Google until the device code is approved, then finish registration.
+///
+/// Runs detached from any browser. The page that started the flow may be
+/// closed, or navigated away to Google's own sign-in page -- the network still
+/// unblocks. Driving this from the page's JavaScript meant a student who
+/// followed the sign-in link in the captive sheet was never registered,
+/// because nothing was left polling.
+fn complete_in_background(cfg: Arc<Config>, state: State, mac: String) {
+    std::thread::spawn(move || {
+        let Some(p0) = state.lock().ok().and_then(|m| m.get(&mac).cloned()) else { return };
+        let post = format!(
+            "client_id={}&client_secret={}&device_code={}&grant_type={}",
+            urlenc(&cfg.client_id), urlenc(&cfg.client_secret), urlenc(&p0.device_code),
+            urlenc("urn:ietf:params:oauth:grant-type:device_code"));
+
+        while now() < p0.expires_at {
+            std::thread::sleep(std::time::Duration::from_secs(p0.interval.max(3)));
+            if state.lock().ok().and_then(|m| m.get(&mac).cloned()).is_none() {
+                return; // finished or abandoned
+            }
+            // A miss is "not approved yet": uclient-fetch reports an HTTP error
+            // as a failure with no body, which is what Google's 428 looks like.
+            let Some(tok) = https(TOKEN_URL, Some(&post)) else { continue };
+            let Some(access) = jget(&tok, "access_token") else { continue };
+            println!("google approved mac={mac}");
+
+            let Some(info) = https(&format!("{USERINFO_URL}?access_token={}", urlenc(&access)), None)
+                else { continue };
+            let email = jget(&info, "email").unwrap_or_default();
+            let name = jget(&info, "name").unwrap_or_else(|| email.clone());
+            let verified = jget(&info, "email_verified").map(|v| v == "true").unwrap_or(false);
+            println!("google identity for mac={mac}: {email} verified={verified}");
+
+            let problem = if !verified || !domain_ok(&email, &cfg.domain) {
+                format!("{email} is not a {} account.", cfg.domain)
+            } else {
+                match roster_lookup(&email) {
+                    None => {
+                        println!("no roster entry for {email} -- cannot register {mac}");
+                        format!("We do not have a GitHub username on file for {email}.")
+                    }
+                    Some(gh) => {
+                        if matches!(github_user(&gh), GhCheck::Missing) {
+                            format!("The roster lists your GitHub username as \"{gh}\", but GitHub has no such user.")
+                        } else {
+                            match register(&mac, &email, &name, &gh, &cfg.class) {
+                                Ok(()) => {
+                                    println!("registered {mac} as {gh} <{email}> from the roster");
+                                    if let Ok(mut m) = state.lock() { m.remove(&mac); }
+                                    return;
+                                }
+                                Err(e) => format!("Could not save the registration: {e}"),
+                            }
+                        }
+                    }
+                }
+            };
+            if let Ok(mut m) = state.lock() {
+                if let Some(e) = m.get_mut(&mac) { e.email = email; e.name = name; e.problem = problem; }
+            }
+            return;
+        }
+        println!("device code expired for mac={mac}");
+    });
+}
 fn enrolled_rows(txt: &str) -> Vec<(String, String)> {
     let mut rows = Vec::new();
     let mut id_col = 0usize;
