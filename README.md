@@ -46,8 +46,11 @@ all — the pop-up shows up and sign-in cannot be completed from it. So students
 are told the router's address instead:
 
 ```
-Join cs245, then open http://192.168.63.1 in your browser
+Join cs245, then open http://signin.cs245 in your browser
 ```
+
+`PORTAL_HOST` sets that name; the router answers for it on the class network
+only, the bare first label works too, and its IP address always works.
 
 `CAPTIVE_POPUP="1"` trades back, and both were tried on real hardware before
 choosing. With the pop-up on, macOS users must complete sign-in inside the

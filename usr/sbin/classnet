@@ -50,7 +50,7 @@ echo "$CLASS" | grep -qE '^[a-z][a-z0-9]{1,10}$' \
 	|| die "CLASS must be 2-11 characters, lowercase letters and digits, starting with a letter (got '$CLASS')"
 C="$CLASS"
 : "${COUNTRY:=US}" "${UPSTREAM_DNS:=1.1.1.1}" "${PROFILES:=}"
-: "${CAPTIVE_POPUP:=0}" "${SESSION_BUFFER_MIN:=5}" "${SESSION_GAP_MIN:=10}" "${RETAIN_DAYS:=150}"
+: "${PORTAL_HOST:=signin.$CLASS}" "${CAPTIVE_POPUP:=0}" "${SESSION_BUFFER_MIN:=5}" "${SESSION_GAP_MIN:=10}" "${RETAIN_DAYS:=150}"
 : "${STAFF_HIDDEN:=0}" "${ALLOW_TCP:=22 80 443}" "${ALLOW_UDP:=443}"
 
 CLASS_IP="$NET.1"
@@ -236,6 +236,19 @@ apply_dhcp() {
 		# default deny. `/#/` matches anything not claimed by a --server above.
 		uci add_list dhcp.${C}.address='/#/'
 	fi
+
+	# A name for the portal, so students are given words rather than an IP.
+	#
+	# A hosts-file record rather than address=/name/ip on purpose. address=
+	# answers the AAAA query with NXDOMAIN, and a musl getaddrinfo treats that
+	# as "no such host" for the whole lookup and throws the perfectly good A
+	# record away -- the name resolves under nslookup and is unusable to every
+	# client on the machine. A hosts record returns NODATA for AAAA, which is
+	# what "this name has no IPv6" is actually supposed to look like.
+	uci set dhcp.${C}_host=domain
+	uci set dhcp.${C}_host.instance="$C"
+	uci set dhcp.${C}_host.name="$PORTAL_HOST ${PORTAL_HOST%%.*}"
+	uci set dhcp.${C}_host.ip="$CLASS_IP"
 
 	# resolved answers for allowlisted names land in the firewall set
 	uci set dhcp.${C}_ipset=ipset

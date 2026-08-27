@@ -59,6 +59,11 @@ PROFILES="rust docs cdn"
 # With 0 there is no pop-up, and students are told one line instead:
 #   "Join the class Wi-Fi, then open http://<router-ip> in your browser."
 # There they are already signed in to Google, and it is an account picker.
+# The name students type to reach the sign-in page. Resolved by this router
+# only, on the class network. The bare first label works too, and the router's
+# IP address always works regardless.
+PORTAL_HOST="signin.cs326"
+
 CAPTIVE_POPUP="0"
 
 # ---- Sessions and attendance ----------------------------------------------

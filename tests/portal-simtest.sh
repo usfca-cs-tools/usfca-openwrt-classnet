@@ -69,6 +69,15 @@ esac
 gets http://$GW/ | grep -qi "sign-in" \
 	&& ok "the portal answers on port 80, so the address needs no port" \
 	|| bad "http://$GW/ does not serve the portal"
+PH=$(sed -n 's/^PORTAL_HOST="\(.*\)".*/\1/p' /etc/classnet/classnet.conf 2>/dev/null)
+if [ -n "$PH" ]; then
+	# By name, not just by address: a hosts record answers AAAA with NODATA,
+	# where address=/name/ip answers NXDOMAIN and a musl getaddrinfo then
+	# discards the good A record and calls the name unresolvable.
+	gets "http://$PH/" | grep -qi "sign-in" \
+		&& ok "the portal answers to its name ($PH)" \
+		|| bad "$PH does not reach the portal"
+fi
 case "$(gets http://$GW:8080/api/captive)" in
 	*'"captive":true'*) ok "RFC 8908 reports captive:true" ;;
 	*) bad "captive API wrong for an unregistered device" ;;

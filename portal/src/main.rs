@@ -36,6 +36,8 @@ struct Config {
     domain: String,
     port: u16,
     listen: String,
+    /// The name students are told to open. Falls back to the address.
+    portal_host: String,
     /// Mirrors CAPTIVE_POPUP. With the pop-up on, macOS will not let the
     /// student's own browser out, so telling them to use it is bad advice.
     popup: bool,
@@ -66,6 +68,7 @@ fn load_config() -> Config {
     }
     let class = m.remove("CLASS").unwrap_or_else(|| "class".into());
     let popup = m.remove("CAPTIVE_POPUP").as_deref() == Some("1");
+    let portal_host = m.remove("PORTAL_HOST").filter(|h| !h.is_empty());
     let net = m.remove("NET").unwrap_or_else(|| "192.168.63".into());
     Config {
         client_id: m.remove("GOOGLE_CLIENT_ID").unwrap_or_default(),
@@ -75,6 +78,7 @@ fn load_config() -> Config {
         listen: m.remove("PORTAL_LISTEN").unwrap_or_else(|| format!("{net}.1")),
         class,
         popup,
+        portal_host: portal_host.unwrap_or_else(|| format!("{net}.1")),
     }
 }
 
@@ -579,7 +583,7 @@ than shown an account to pick.</p>".to_string()
             format!("<p class=muted><b>No account to choose from?</b> You are in \
 the Wi-Fi pop-up window, which has no Google session. Open <b>Safari</b> or \
 <b>Chrome</b> and go to <b>{}</b> &mdash; this same page &mdash; and press the \
-button there.</p>", esc(&cfg.listen))
+button there.</p>", esc(&cfg.portal_host))
         },
         p.interval.max(3));
     respond(s, "200 OK", "text/html", &page("CS 326 sign-in", &html));
