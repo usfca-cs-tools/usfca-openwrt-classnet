@@ -66,6 +66,15 @@ PORTAL_HOST="signin.cs326"
 
 CAPTIVE_POPUP="0"
 
+# ---- Who is in the room ----------------------------------------------------
+# A page listing, by name, the students connected to the class Wi-Fi right now.
+# Answered by this router on BOTH class networks -- students on the class SSID
+# and staff on the staff SSID resolve it to their own side of the router -- and
+# by nobody else. Anyone who can join the network can read it, which is the
+# point and also the whole of the privacy question: set it empty to switch the
+# page, its name and its firewall rules off together.
+ONLINE_HOST="online.cs326"
+
 # ---- Sessions and attendance ----------------------------------------------
 # Scheduled class periods live in schedule.conf. Minutes added to the end of
 # each scheduled period, so students who linger still count as present.

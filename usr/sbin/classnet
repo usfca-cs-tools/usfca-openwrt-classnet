@@ -51,6 +51,9 @@ echo "$CLASS" | grep -qE '^[a-z][a-z0-9]{1,10}$' \
 C="$CLASS"
 : "${COUNTRY:=US}" "${UPSTREAM_DNS:=1.1.1.1}" "${PROFILES:=}"
 : "${PORTAL_HOST:=signin.$CLASS}" "${CAPTIVE_POPUP:=0}" "${SESSION_BUFFER_MIN:=5}" "${SESSION_GAP_MIN:=10}" "${RETAIN_DAYS:=150}"
+# No colon: an unset ONLINE_HOST takes the default, but one set to "" is an
+# operator switching the who-is-online page off, not an omission to fill in.
+: "${ONLINE_HOST=online.$CLASS}"
 : "${STAFF_HIDDEN:=0}" "${ALLOW_TCP:=22 80 443}" "${ALLOW_UDP:=443}"
 
 CLASS_IP="$NET.1"
@@ -176,6 +179,17 @@ apply_dhcp() {
 	uci -q del_list dhcp.main.notinterface="$C"
 	uci add_list dhcp.main.notinterface="$C"
 
+	# ...and the class domain is ours, so main answers for it instead of
+	# forwarding it. An empty server for a domain is what --local means: never
+	# ask upstream. Without this a staff laptop that asks for a class name
+	# before that name exists is answered by the ROOT servers, whose NXDOMAIN
+	# carries an SOA with a 24-hour negative TTL -- and the name then stays
+	# broken on that laptop for a day after the router is right. Added as a
+	# list, because dhcp.main.local is the stock '/lan/' and setting it would
+	# take .lan down with it.
+	uci -q del_list dhcp.main.server="/$C/"
+	uci add_list dhcp.main.server="/$C/"
+
 	# ---- the filtered resolver -------------------------------------------
 	uci set dhcp.${C}=dnsmasq
 	uci add_list dhcp.${C}.interface="$C"
@@ -191,6 +205,15 @@ apply_dhcp() {
 	uci set dhcp.${C}.domain="$C"
 	uci set dhcp.${C}.local="/$C/"
 	uci set dhcp.${C}.expandhosts='1'
+	# Every instance reads the whole of /tmp/hosts, not just its own file, so a
+	# name that both resolvers answer for -- the who-is-online page below, and
+	# the stock "OpenWrt" record -- has one A record per network visible here.
+	# localise-queries picks the one on the subnet the query arrived from,
+	# which is how the stock instance already handles it and why it is on there
+	# by default. Without it a student would get the staff address half the
+	# time, which reads as an intermittently broken page rather than a
+	# misconfigured one.
+	uci set dhcp.${C}.localise_queries='1'
 	uci set dhcp.${C}.cachesize='2000'
 	uci set dhcp.${C}.leasefile="/tmp/dhcp.${C}.leases"
 	uci set dhcp.${C}.domainneeded='1'
@@ -249,6 +272,25 @@ apply_dhcp() {
 	uci set dhcp.${C}_host.instance="$C"
 	uci set dhcp.${C}_host.name="$PORTAL_HOST ${PORTAL_HOST%%.*}"
 	uci set dhcp.${C}_host.ip="$CLASS_IP"
+
+	# ...and a name for the who-is-online page, which unlike the portal is
+	# answered on BOTH class networks. Two records for one name, deliberately:
+	# each side is told the router's address on its own network, so neither has
+	# to route into the other to read the page. They do not conflict because
+	# both resolvers have localise-queries, which answers with the address on
+	# the subnet the query came from. The staff record goes to the main
+	# instance because that is the resolver the staff SSID is served by.
+	if [ -n "$ONLINE_HOST" ]; then
+		uci set dhcp.${C}_online=domain
+		uci set dhcp.${C}_online.instance="$C"
+		uci set dhcp.${C}_online.name="$ONLINE_HOST ${ONLINE_HOST%%.*}"
+		uci set dhcp.${C}_online.ip="$CLASS_IP"
+
+		uci set dhcp.${C}_sonline=domain
+		uci set dhcp.${C}_sonline.instance='main'
+		uci set dhcp.${C}_sonline.name="$ONLINE_HOST ${ONLINE_HOST%%.*}"
+		uci set dhcp.${C}_sonline.ip="$STAFF_IP"
+	fi
 
 	# resolved answers for allowlisted names land in the firewall set
 	uci set dhcp.${C}_ipset=ipset
@@ -466,25 +508,48 @@ apply_firewall() {
 		uci set firewall.${C}_portal.ipset="!${C}_reg"
 		uci set firewall.${C}_portal.target='DNAT'
 		fi
-
-		_svc ${C}_in_portal "$C" tcp "$PORTAL_PORT" "$C portal"
-
-		# Plain http to the router itself lands on the portal, so the address a
-		# student is given is just the router IP with no port. src_dip keeps this
-		# to packets already addressed here: it is not interception, and in
-		# particular it leaves the OS connectivity probe alone.
-		uci set firewall.${C}_portal80=redirect
-		uci set firewall.${C}_portal80.name="$C-portal-on-80"
-		uci set firewall.${C}_portal80.src="$C"
-		uci set firewall.${C}_portal80.proto=tcp
-		uci set firewall.${C}_portal80.src_dip="$CLASS_IP"
-		uci set firewall.${C}_portal80.src_dport=80
-		uci set firewall.${C}_portal80.dest_ip="$CLASS_IP"
-		uci set firewall.${C}_portal80.dest_port="$PORTAL_PORT"
-		uci set firewall.${C}_portal80.target=DNAT
 	else
 		_allow ${C}_allow_dns ${C}_dns4 "$ALLOW_TCP" "$ALLOW_UDP"
 		_allow ${C}_allow_net ${C}_net4 "80 443"     "$ALLOW_UDP"
+	fi
+
+	# Reaching the router's own pages is not conditioned on the gate. It used to
+	# be, and that was wrong in both directions: with the gate off the sign-in
+	# page still earns its keep, because the identity it binds is what
+	# attendance is reported under, and the who-is-online page has nothing to do
+	# with the gate at all.
+	_svc ${C}_in_portal "$C" tcp "$PORTAL_PORT" "$C portal"
+
+	# Plain http to the router itself lands on the portal, so the address a
+	# student is given is just the router IP with no port. src_dip keeps this
+	# to packets already addressed here: it is not interception, and in
+	# particular it leaves the OS connectivity probe alone.
+	uci set firewall.${C}_portal80=redirect
+	uci set firewall.${C}_portal80.name="$C-portal-on-80"
+	uci set firewall.${C}_portal80.src="$C"
+	uci set firewall.${C}_portal80.proto=tcp
+	uci set firewall.${C}_portal80.src_dip="$CLASS_IP"
+	uci set firewall.${C}_portal80.src_dport=80
+	uci set firewall.${C}_portal80.dest_ip="$CLASS_IP"
+	uci set firewall.${C}_portal80.dest_port="$PORTAL_PORT"
+	uci set firewall.${C}_portal80.target=DNAT
+
+	# The same page from the staff SSID, on the staff side of the router. The
+	# staff zone is input REJECT, so without these two a TA gets nothing; with
+	# them a TA gets the who-is-online page and nothing else, because the portal
+	# serves only that page to requests arriving on this address.
+	if [ -n "$ONLINE_HOST" ]; then
+		_svc ${C}_sin_portal ${C}staff tcp "$PORTAL_PORT" 'staff portal'
+
+		uci set firewall.${C}_sportal80=redirect
+		uci set firewall.${C}_sportal80.name="$C-staff-portal-on-80"
+		uci set firewall.${C}_sportal80.src="${C}staff"
+		uci set firewall.${C}_sportal80.proto=tcp
+		uci set firewall.${C}_sportal80.src_dip="$STAFF_IP"
+		uci set firewall.${C}_sportal80.src_dport=80
+		uci set firewall.${C}_sportal80.dest_ip="$STAFF_IP"
+		uci set firewall.${C}_sportal80.dest_port="$PORTAL_PORT"
+		uci set firewall.${C}_sportal80.target=DNAT
 	fi
 
 	# fail fast instead of hanging when a client tries DNS-over-TLS
@@ -633,6 +698,12 @@ cmd_status() {
 	echo "Allowed names : $(domains | wc -l | tr -d ' ')"
 	echo "Denied names  : $(denied | wc -l | tr -d ' ')"
 	echo "Staff MACs    : $(staff_macs | wc -l | tr -d ' ')"
+	echo "Sign-in page  : http://$PORTAL_HOST  (on $SSID)"
+	if [ -n "$ONLINE_HOST" ]; then
+		echo "Who is online : http://$ONLINE_HOST  (on $SSID and $STAFF_SSID)"
+	else
+		echo "Who is online : off (ONLINE_HOST is empty)"
+	fi
 	echo "Set ${C}_dns4: $(_setcount ${C}_dns4) addresses learned"
 	echo "Set ${C}_net4: $(_setcount ${C}_net4) static entries"
 	echo
@@ -744,10 +815,28 @@ cmd_test() {
 		&& echo "  ok   DNS-learned set exists" || { echo "  FAIL ${C}_dns4 missing"; rc=1; }
 	pgrep -f "dnsmasq.conf.$C" >/dev/null \
 		&& echo "  ok   classnet resolver running" || { echo "  FAIL resolver not running"; rc=1; }
+	# The staff-side resolver must answer for .$C itself. If it forwards, the
+	# root servers answer a name that does not exist yet with an SOA carrying a
+	# 24-hour negative TTL, and the laptop that asked keeps the name broken for
+	# a day after the router is right -- a failure that looks like the router
+	# and is not.
+	grep -qx "server=/$C/" /var/etc/dnsmasq.conf.main 2>/dev/null \
+		&& echo "  ok   .$C is answered here, never forwarded to the root" \
+		|| { echo "  FAIL main resolver forwards .$C upstream (24h stale NXDOMAIN on clients)"; rc=1; }
+	if [ -n "$ONLINE_HOST" ] && [ -x /usr/sbin/classnet-portal ]; then
+		# The staff-side listener is the half of the who-is-online page that no
+		# test on the student network can see: it binds in its own thread, and
+		# a staff interface that was not up when the portal started leaves the
+		# page working for students and silently missing for staff.
+		netstat -ltn 2>/dev/null | grep -q "$STAFF_IP:$PORTAL_PORT" \
+			&& echo "  ok   portal listening for staff on $STAFF_IP:$PORTAL_PORT" \
+			|| { echo "  FAIL portal not listening on $STAFF_IP:$PORTAL_PORT -- restart classnet-portal"; rc=1; }
+	fi
 
 	echo "== resolver behaviour (asking $CLASS_IP directly) =="
 	_q()  { nslookup "$1" "$CLASS_IP" 2>/dev/null | sed -n '/^Name:/,$p' | grep -c '^Address'; }
-	for d in github.com usfca-cs-tools.github.io; do
+	for d in github.com usfca-cs-tools.github.io "${ONLINE_HOST:-}" "$PORTAL_HOST"; do
+		[ -n "$d" ] || continue
 		[ "$(_q "$d")" -gt 0 ] && echo "  ok   $d resolves" || { echo "  FAIL $d should resolve"; rc=1; }
 	done
 	for d in chatgpt.com api.githubcopilot.com api.anthropic.com doc.rust-lang.org; do

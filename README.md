@@ -75,6 +75,40 @@ they are never asked to type their own GitHub username, because a typo there
 binds the wrong identity and does not surface until something silently goes to
 the wrong place weeks later.
 
+**Who else is here.** One page the whole room can read:
+
+```
+Open  http://online.cs245
+```
+
+```
+ ┌────────────────────────────────┐
+ │  Online on cs245               │
+ │                                │
+ │  3 people connected to cs245   │
+ │  right now.                    │
+ │                                │
+ │  Ana Lopez            a-lopez  │
+ │  Jane Smith            jsmith  │
+ │  Kim Wong               kwong  │
+ │                                │
+ │  1 device here has not         │
+ │  signed in.                    │
+ └────────────────────────────────┘
+```
+
+Names and GitHub usernames, sorted alphabetically, refreshed every thirty
+seconds — enough to find the person whose repository you are looking at, or to
+see that your project partner is in the room. **People, not devices**: a laptop
+and a phone signed in as the same student are one line, and nothing that is not
+a name (email, MAC, how long anyone has been sitting there) appears on it. That
+detail stays in `classnet who`, which only you can run.
+
+The same page answers on both class networks, on their own side of the router,
+so a TA on `cs245-staff` reads it at the same address without joining the
+student SSID. `ONLINE_HOST=""` switches the page, its name and its firewall
+rules off together.
+
 ## What the instructor and TAs do
 
 **Before the term.** Drop in a roster mapping people to GitHub usernames (a
@@ -299,6 +333,13 @@ classnet gate on | off        # require registration before the allowlist applie
   aa:bb:cc:dd:ee:ff  0:03   (unregistered -- has not signed in)
 ```
 
+`http://online.cs245` is the same question asked by the room: names only, no
+addresses and no durations, readable from either SSID. It is the one page here
+that is not about the device asking for it, so it needs no sign-in and works
+whether the registration gate is on or off — unregistered devices are counted
+at the bottom rather than left out, since a list that silently omits people
+reads as a complete one.
+
 **`gate` ships off.** Turning it on cuts off every already-connected laptop
 until it registers, so it has to be a deliberate act, not something an install
 does to a live classroom.
@@ -368,7 +409,7 @@ Pipe rather than `scp`: OpenWrt has no sftp-server.
 ```sh
 ssh router 'classnet test'          # resolver, ruleset, sets
 ssh router 'classnet-simtest'       # full policy suite, ~40 assertions
-ssh router 'classnet-portaltest'    # registration gate and portal, ~20
+ssh router 'classnet-portaltest'    # registration gate and portal, ~25
 bash tests/client-selftest.sh       # from a real laptop on the student SSID
 ```
 
@@ -397,6 +438,12 @@ If you collect attendance, say so first. Students should know what is recorded
 times — that it is not scored, and that it is deleted at the end of term. Our
 course discloses it in the syllabus alongside everything else the tooling
 records, and that ordering matters: disclose, then collect.
+
+The who-is-online page is part of that disclosure and not a footnote to it:
+anyone who can join the class Wi-Fi can read who else is on it, by name. That
+is the point of the page, and it is also the whole of the privacy question, so
+decide it deliberately rather than by leaving a default alone. A class where
+that is not wanted sets `ONLINE_HOST=""` and the page does not exist.
 
 ## Layout
 

@@ -97,6 +97,40 @@ case "$(gets http://$GW:8080/api/captive)" in
 	*) bad "captive API did not flip" ;;
 esac
 
+echo "== the who-is-online page =="
+OH=$(sed -n 's/^ONLINE_HOST="\(.*\)".*/\1/p' /etc/classnet/classnet.conf 2>/dev/null)
+if [ -n "$OH" ]; then
+	# By name: the page is reached by Host header, not by path, so an address
+	# that answers proves nothing about the name students are actually given.
+	body=$(gets "http://$OH/")
+	case "$body" in
+		*"Online on"*) ok "$OH serves the who-is-online page" ;;
+		*"sign-in"*)   bad "$OH falls through to the sign-in page" ;;
+		"")            bad "$OH is unreachable" ;;
+		*)             bad "$OH served something unexpected" ;;
+	esac
+	# The page is read by everyone on the network, so it names people and
+	# stops there -- addresses stay in `classnet who`.
+	case "$body" in
+		*"@usfca.edu"*|*"$MAC"*) bad "the page leaks addresses to the whole class" ;;
+		*) ok "the page names people, not addresses" ;;
+	esac
+	# The same name on the same router must NOT be a way past the sign-in page.
+	gets "http://$GW/" | grep -qi "sign-in" \
+		&& ok "the sign-in page is unaffected by the online page" \
+		|| bad "http://$GW/ no longer serves the portal"
+	# The staff half cannot be reached from this namespace, so assert the
+	# listener exists at all: that is the part no student-side test can see.
+	SIP=$(sed -n 's/^STAFF_NET="\(.*\)".*/\1/p' /etc/classnet/classnet.conf 2>/dev/null)
+	if [ -n "$SIP" ]; then
+		netstat -ltn 2>/dev/null | grep -q "$SIP.1:8080" \
+			&& ok "the portal also listens on the staff address ($SIP.1:8080)" \
+			|| bad "no staff listener -- $OH will not answer on the staff SSID"
+	fi
+else
+	echo "  (ONLINE_HOST is empty -- page switched off, nothing to test)"
+fi
+
 echo "== the roster knows who it is =="
 classnet roster --github 2>/dev/null | grep -qx simtestuser && ok "roster lists simtestuser" || bad "roster missing the registration"
 

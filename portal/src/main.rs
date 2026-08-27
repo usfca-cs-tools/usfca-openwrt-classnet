@@ -15,7 +15,7 @@
 //!   redirect URIs, so a portal at 192.168.63.1 could never be one. The device
 //!   flow needs no redirect URI at all.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -44,6 +44,16 @@ struct Config {
     /// The course code. Names the nftables set this unblocks, and must match
     /// what the `classnet` CLI generated -- they are two halves of one system.
     class: String,
+    /// The student SSID, for naming the network in the page rather than in
+    /// terms the student never sees.
+    ssid: String,
+    /// The name the who-is-online page answers to, on both class networks.
+    /// Empty switches the page off entirely.
+    online_host: String,
+    /// The router's address on the staff network. A second listener there is
+    /// what makes the online page readable from the staff SSID without
+    /// routing staff traffic into the student subnet.
+    staff_listen: String,
 }
 
 fn load_config() -> Config {
@@ -70,6 +80,11 @@ fn load_config() -> Config {
     let popup = m.remove("CAPTIVE_POPUP").as_deref() == Some("1");
     let portal_host = m.remove("PORTAL_HOST").filter(|h| !h.is_empty());
     let net = m.remove("NET").unwrap_or_else(|| "192.168.63".into());
+    let staff_net = m.remove("STAFF_NET").unwrap_or_else(|| "192.168.64".into());
+    // Absent means on, under the same default the CLI uses; an explicit empty
+    // value means off. One switch turns off the page, its name and its rules.
+    let online_host = m.remove("ONLINE_HOST").unwrap_or_else(|| format!("online.{class}"));
+    let ssid = m.remove("SSID").unwrap_or_else(|| class.clone());
     Config {
         client_id: m.remove("GOOGLE_CLIENT_ID").unwrap_or_default(),
         client_secret: m.remove("GOOGLE_CLIENT_SECRET").unwrap_or_default(),
@@ -77,8 +92,11 @@ fn load_config() -> Config {
         port: m.remove("PORTAL_PORT").and_then(|s| s.parse().ok()).unwrap_or(8080),
         listen: m.remove("PORTAL_LISTEN").unwrap_or_else(|| format!("{net}.1")),
         class,
+        ssid,
+        online_host,
         popup,
         portal_host: portal_host.unwrap_or_else(|| format!("{net}.1")),
+        staff_listen: m.remove("PORTAL_STAFF_LISTEN").unwrap_or_else(|| format!("{staff_net}.1")),
     }
 }
 
@@ -212,6 +230,45 @@ fn mac_for_ip(ip: &str, class: &str) -> Option<String> {
     f.iter().position(|w| *w == "lladdr").and_then(|i| f.get(i + 1)).map(|m| m.to_lowercase())
 }
 
+/// Everyone associated to the class access points right now, as
+/// (mac, connected seconds).
+///
+/// The AP's own association table, which is what `classnet who` reads: it
+/// costs the student nothing and cannot be forgotten. `connected time` resets
+/// when a laptop roams between the 2.4 and 5 GHz radios, so the largest value
+/// seen for a MAC is the one that is true.
+fn stations(class: &str) -> Vec<(String, u64)> {
+    let mut best: HashMap<String, u64> = HashMap::new();
+    let Ok(brif) = fs::read_dir(format!("/sys/class/net/br-{class}/brif")) else {
+        return Vec::new();
+    };
+    for e in brif.flatten() {
+        let dev = e.file_name().to_string_lossy().to_string();
+        let Ok(out) = Command::new("iw").args(["dev", &dev, "station", "dump"]).output() else {
+            continue;
+        };
+        let mut mac = String::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("Station ") {
+                mac = rest.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+            } else if let Some(v) = t.strip_prefix("connected time:") {
+                if mac.is_empty() {
+                    continue;
+                }
+                let secs: u64 = v.split_whitespace().next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let slot = best.entry(mac.clone()).or_insert(0);
+                if secs > *slot {
+                    *slot = secs;
+                }
+            }
+        }
+    }
+    let mut v: Vec<(String, u64)> = best.into_iter().collect();
+    v.sort();
+    v
+}
+
 /// Split one CSV line, honouring double quotes -- a Google Forms export quotes
 /// any field containing a comma, and full names routinely do.
 fn csv_fields(line: &str) -> Vec<String> {
@@ -293,6 +350,26 @@ fn roster_rows(txt: &str) -> Vec<(String, String)> {
         rows.push((who.trim().to_string(), gh.trim().to_string()));
     }
     rows
+}
+
+/// The whole registration table, read once, keyed by MAC.
+///
+/// `is_registered` re-reads the file per device, which is right when one
+/// device is asking about itself and wrong for a page that asks about every
+/// device in the room at once.
+fn registrations() -> HashMap<String, (String, String, String)> {
+    let mut m = HashMap::new();
+    let Ok(txt) = fs::read_to_string(format!("{CONF_DIR}/registrations.tsv")) else { return m };
+    for line in txt.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() >= 4 {
+            m.insert(f[0].to_ascii_lowercase(), (f[1].into(), f[2].into(), f[3].into()));
+        }
+    }
+    m
 }
 
 fn is_registered(mac: &str) -> Option<(String, String, String)> {
@@ -394,6 +471,11 @@ background:var(--card);color:var(--fg);font-size:1rem;margin-top:10px}\
 .ok{color:#15803d}.err{color:#b91c1c}\
 @media(prefers-color-scheme:dark){.ok{color:#4ade80}.err{color:#f87171}}\
 .muted{color:var(--dim);font-size:.85rem}\
+ul.who{list-style:none;padding:0;margin:.9rem 0}\
+ul.who li{display:flex;justify-content:space-between;align-items:baseline;gap:1rem;\
+padding:.5rem 0;border-bottom:1px solid var(--edge)}\
+ul.who li:last-child{border-bottom:0}\
+.gh{color:var(--dim);font:.85rem ui-monospace,SFMono-Regular,Menlo,monospace}\
 </style>";
 
 fn page(title: &str, body: &str) -> String {
@@ -401,6 +483,83 @@ fn page(title: &str, body: &str) -> String {
 <meta name=viewport content='width=device-width,initial-scale=1'>\
 <title>{}</title>{CSS}<div class=card><h1>{}</h1>{}</div>",
         esc(title), esc(title), body)
+}
+
+/// Who is in the room, by name.
+///
+/// The one page here that is not about the device asking for it, and the one
+/// both class networks can read: a student on `cs326` and a TA on
+/// `cs326-staff` get the same list. People, not devices -- a laptop and a
+/// phone signed in as the same person are one name -- and no addresses, since
+/// this is read by the room rather than by the instructor.
+fn online_page(cfg: &Config) -> String {
+    let reg = registrations();
+    let devices = stations(&cfg.class).into_iter().map(|(mac, _)| reg.get(&mac).cloned()).collect();
+    let (people, anon) = people_present(devices);
+    render_online(cfg, &people, anon)
+}
+
+/// Fold the devices associated right now into the people behind them.
+///
+/// Two devices signed in as the same person are one name: phones join the
+/// class network too, and a list that names people twice reads as a list of
+/// hardware. Devices with nobody behind them are counted, not dropped -- a
+/// list that silently omits people reads as a complete one.
+fn people_present(devices: Vec<Option<(String, String, String)>>) -> (Vec<(String, String)>, usize) {
+    let (mut people, mut anon, mut seen) = (Vec::new(), 0usize, HashSet::new());
+    for d in devices {
+        match d {
+            Some((email, name, github)) => {
+                let key = if github.is_empty() { email.to_ascii_lowercase() }
+                          else { github.to_ascii_lowercase() };
+                if seen.insert(key) {
+                    people.push((name, github));
+                }
+            }
+            None => anon += 1,
+        }
+    }
+    people.sort_by_key(|(name, _)| name.to_ascii_lowercase());
+    (people, anon)
+}
+
+fn render_online(cfg: &Config, people: &[(String, String)], anon: usize) -> String {
+    let list = if people.is_empty() {
+        "<p>Nobody signed in is connected right now.</p>".to_string()
+    } else {
+        let rows: String = people
+            .iter()
+            .map(|(name, github)| {
+                format!("<li><span>{}</span><span class=gh>{}</span></li>", esc(name), esc(github))
+            })
+            .collect();
+        format!("<ul class=who>{rows}</ul>")
+    };
+    let foot = if anon > 0 {
+        format!("<p class=muted>{} here {} not signed in, so there is no name to \
+show for {}.</p>",
+            if anon == 1 { "1 device".to_string() } else { format!("{anon} devices") },
+            if anon == 1 { "has" } else { "have" },
+            if anon == 1 { "it" } else { "them" })
+    } else {
+        String::new()
+    };
+    page(&format!("Online on {}", cfg.ssid), &format!(
+        "<p class=lead>{} connected to <b>{}</b> right now.</p>{list}{foot}\
+<p class=muted>Refreshes every 30 seconds.</p>\
+<script>setTimeout(()=>location.reload(),30000);</script>",
+        if people.len() == 1 { "1 person".to_string() } else { format!("{} people", people.len()) },
+        esc(&cfg.ssid)))
+}
+
+/// Is this request asking for the who-is-online page? The full name or its bare
+/// first label, since the resolver answers to both.
+fn wants_online(host: &str, online_host: &str) -> bool {
+    if online_host.is_empty() {
+        return false;
+    }
+    let short = online_host.split('.').next().unwrap_or("");
+    host.eq_ignore_ascii_case(online_host) || (!short.is_empty() && host.eq_ignore_ascii_case(short))
 }
 
 // ---------------------------------------------------------------- routing ---
@@ -433,6 +592,7 @@ fn handle(mut s: TcpStream, cfg: Arc<Config>, state: State) {
 
     let mut len = 0usize;
     let mut ua = String::new();
+    let mut host = String::new();
     loop {
         let mut h = String::new();
         if r.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
@@ -443,6 +603,8 @@ fn handle(mut s: TcpStream, cfg: Arc<Config>, state: State) {
             len = v.trim().parse().unwrap_or(0);
         } else if let Some(v) = lower.strip_prefix("user-agent:") {
             ua = v.trim().to_string();
+        } else if let Some(v) = lower.strip_prefix("host:") {
+            host = v.trim().split(':').next().unwrap_or("").to_string();
         }
     }
     // Drained rather than parsed: no route takes a body since the GitHub
@@ -453,6 +615,23 @@ fn handle(mut s: TcpStream, cfg: Arc<Config>, state: State) {
     }
 
     let path = target.split('?').next().unwrap_or("/").to_string();
+
+    // Who is online, before any of the sign-in machinery: this page is about
+    // the room, not about the device asking, so it needs no MAC and belongs to
+    // no flow. Two ways in, and both matter -- by name on the student network,
+    // and by arriving on the staff address at all, where the sign-in pages are
+    // meaningless because staff never register.
+    if !cfg.online_host.is_empty() {
+        let local = s.local_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+        let staff_side = cfg.staff_listen != cfg.listen && local == cfg.staff_listen;
+        if staff_side || wants_online(&host, &cfg.online_host) {
+            // Deliberately unlogged: a browser left open reloads this every
+            // 30 seconds, and drowning the portal's log in it would cost the
+            // one thing that log is for.
+            return respond(s, "200 OK", "text/html", &online_page(&cfg));
+        }
+    }
+
     let mac = mac_for_ip(&peer, &cfg.class).unwrap_or_default();
     if path == "/" { println!("  ua: {ua}"); }
     println!("{method} {path} from {peer} mac={} {}", 
@@ -822,12 +1001,48 @@ fn check_roster() -> i32 {
     if bad > 0 || !notes.is_empty() || missing > 0 { 1 } else { 0 }
 }
 
+fn serve(l: TcpListener, cfg: Arc<Config>, state: State) {
+    for stream in l.incoming().flatten() {
+        let (cfg, state) = (cfg.clone(), state.clone());
+        std::thread::spawn(move || handle(stream, cfg, state));
+    }
+}
+
 fn main() {
     if std::env::args().any(|a| a == "--check-roster") {
         std::process::exit(check_roster());
     }
     let cfg = Arc::new(load_config());
     let state: State = Arc::new(Mutex::new(HashMap::new()));
+
+    // A second listener on the staff address, so the who-is-online page can be
+    // read from the staff SSID without routing staff traffic into the student
+    // subnet. In its own thread, and patient: the staff interface may not be up
+    // yet at boot, and an address that is not ready must not stop the sign-in
+    // portal -- the thing students actually need -- from starting at all.
+    if !cfg.online_host.is_empty() && cfg.staff_listen != cfg.listen {
+        let bind = format!("{}:{}", cfg.staff_listen, cfg.port);
+        let (cfg, state) = (cfg.clone(), state.clone());
+        std::thread::spawn(move || {
+            let mut announced = false;
+            loop {
+                match TcpListener::bind(&bind) {
+                    Ok(l) => {
+                        println!("classnet-portal also listening on {bind} (staff)");
+                        return serve(l, cfg, state);
+                    }
+                    Err(e) => {
+                        if !announced {
+                            println!("classnet-portal: {bind} not ready ({e}); retrying");
+                            announced = true;
+                        }
+                        std::thread::sleep(std::time::Duration::from_secs(10));
+                    }
+                }
+            }
+        });
+    }
+
     let bind = format!("{}:{}", cfg.listen, cfg.port);
     let l = match TcpListener::bind(&bind) {
         Ok(l) => l,
@@ -837,16 +1052,27 @@ fn main() {
         }
     };
     println!("classnet-portal listening on {bind}");
-    for stream in l.incoming().flatten() {
-        let (cfg, state) = (cfg.clone(), state.clone());
-        std::thread::spawn(move || handle(stream, cfg, state));
-    }
+    serve(l, cfg, state);
 }
 
 
 #[cfg(test)]
 mod tests {
-    use super::{domain_ok, roster_find};
+    use super::{domain_ok, people_present, render_online, roster_find, wants_online, Config};
+
+    fn cfg() -> Config {
+        Config {
+            client_id: String::new(), client_secret: String::new(),
+            domain: "usfca.edu".into(), port: 8080, listen: "192.168.63.1".into(),
+            portal_host: "signin.cs326".into(), popup: false, class: "cs326".into(),
+            ssid: "cs326".into(), online_host: "online.cs326".into(),
+            staff_listen: "192.168.64.1".into(),
+        }
+    }
+
+    fn person(email: &str, name: &str, github: &str) -> Option<(String, String, String)> {
+        Some((email.into(), name.into(), github.into()))
+    }
 
     const FORMS: &str = "\
 Timestamp,Email Address,What is your GitHub username?\n\
@@ -932,6 +1158,58 @@ Student,ID,SIS User ID,SIS Login ID,Section\n\
         ] {
             assert!(domain_ok(e, "usfca.edu"), "should accept {e}");
         }
+    }
+
+    #[test]
+    fn one_person_with_two_devices_is_one_name() {
+        // A laptop and a phone, both signed in as the same student. Listing
+        // both is listing hardware, which is not what the page is for.
+        let (people, anon) = people_present(vec![
+            person("jsmith@dons.usfca.edu", "Jane Smith", "jsmith"),
+            person("jsmith@dons.usfca.edu", "Jane Smith", "JSmith"),
+            person("alopez@dons.usfca.edu", "Ana Lopez", "a-lopez"),
+            None,
+            None,
+        ]);
+        assert_eq!(people.len(), 2);
+        assert_eq!(anon, 2, "devices with nobody behind them are counted, not dropped");
+        // sorted by name, so the list does not rank anyone by signal or arrival
+        assert_eq!(people[0].0, "Ana Lopez");
+        assert_eq!(people[1].0, "Jane Smith");
+    }
+
+    #[test]
+    fn the_online_page_names_people_and_nothing_else() {
+        let page = render_online(&cfg(), &[("Jane Smith".into(), "jsmith".into())], 1);
+        let card = page.split("<div class=card>").nth(1).expect("a card");
+        assert!(card.contains("Jane Smith"));
+        assert!(card.contains("jsmith"));
+        assert!(card.contains("1 person connected"));
+        // This page is read by the room, not by the instructor: addresses --
+        // email and MAC alike -- stay in `classnet who`.
+        assert!(!card.contains('@'), "no email addresses on a page the class can read");
+        assert!(card.contains("1 device here has not signed in"));
+    }
+
+    #[test]
+    fn a_name_cannot_smuggle_markup_onto_the_page() {
+        // Names come from Google, but the page is read by everyone on the
+        // network, so it escapes them like any other untrusted string.
+        let page = render_online(&cfg(), &[("<script>x</script>".into(), "gh".into())], 0);
+        assert!(!page.contains("<script>x"));
+        assert!(page.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn the_online_page_answers_to_its_name_and_its_bare_label() {
+        assert!(wants_online("online.cs326", "online.cs326"));
+        assert!(wants_online("ONLINE.CS326", "online.cs326"));
+        assert!(wants_online("online", "online.cs326"), "expandhosts answers the bare label too");
+        assert!(!wants_online("signin.cs326", "online.cs326"));
+        assert!(!wants_online("192.168.63.1", "online.cs326"));
+        // ONLINE_HOST="" switches the page off, so nothing may reach it.
+        assert!(!wants_online("online.cs326", ""));
+        assert!(!wants_online("", ""));
     }
 
     #[test]
