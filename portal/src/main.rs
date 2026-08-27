@@ -1,4 +1,4 @@
-//! cs326-portal -- the CS 326 classroom sign-in portal.
+//! classnet-portal -- the CS 326 classroom sign-in portal.
 //!
 //! A student joining `cs326` for the first time is intercepted here, signs in
 //! with their USF Google account, names their GitHub username, and their MAC is
@@ -120,7 +120,7 @@ fn https(url: &str, post: Option<&str>) -> Option<String> {
 /// is "it failed", and reporting a rate limit as "no such user" would have the
 /// instructor chasing typos that are not there.
 fn fetch(url: &str, post: Option<&str>) -> (Option<String>, String) {
-    let tmp = format!("/tmp/.cs326-portal-{}-{:?}", std::process::id(),
+    let tmp = format!("/tmp/.classnet-portal-{}-{:?}", std::process::id(),
                       std::thread::current().id());
     let mut cmd = Command::new("uclient-fetch");
     cmd.arg("-T").arg("15").arg("-O").arg(&tmp);
@@ -191,8 +191,12 @@ fn esc(s: &str) -> String {
 
 /// Map the peer IP back to a MAC. The DHCP lease file is authoritative for this
 /// subnet; the neighbour table catches a client that set a static address.
-fn mac_for_ip(ip: &str) -> Option<String> {
-    for path in ["/tmp/dhcp.cs326.leases", "/tmp/dhcp.leases"] {
+///
+/// The class-specific lease file is named by `classnet apply`, so it has to be
+/// derived rather than spelled: a renamed class would otherwise fall through to
+/// the LAN lease file, which holds no student lease at all.
+fn mac_for_ip(ip: &str, class: &str) -> Option<String> {
+    for path in [format!("/tmp/dhcp.{class}.leases"), "/tmp/dhcp.leases".to_string()] {
         if let Ok(txt) = fs::read_to_string(path) {
             for line in txt.lines() {
                 let f: Vec<&str> = line.split_whitespace().collect();
@@ -248,7 +252,7 @@ fn roster_find(txt: &str, email: &str) -> Option<String> {
 }
 
 /// Every (usf, github) pair in the file, in order. One parser, shared by the
-/// live lookup and `cs326 roster check`, so a roster that checks clean cannot
+/// live lookup and `classnet roster check`, so a roster that checks clean cannot
 /// then fail at the door.
 fn roster_rows(txt: &str) -> Vec<(String, String)> {
     let mut rows = Vec::new();
@@ -449,7 +453,7 @@ fn handle(mut s: TcpStream, cfg: Arc<Config>, state: State) {
     }
 
     let path = target.split('?').next().unwrap_or("/").to_string();
-    let mac = mac_for_ip(&peer).unwrap_or_default();
+    let mac = mac_for_ip(&peer, &cfg.class).unwrap_or_default();
     if path == "/" { println!("  ua: {ua}"); }
     println!("{method} {path} from {peer} mac={} {}", 
         if mac.is_empty() { "?" } else { &mac },
@@ -511,7 +515,7 @@ them a moment and you do not need to do anything else.</p>\
         return respond(s, "200 OK", "text/html", &page("Not configured",
             "<p class=err>The portal has no Google client configured.</p>\
 <p class=muted>Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in \
-/etc/cs326/portal.conf on the router.</p>"));
+/etc/classnet/portal.conf on the router.</p>"));
     }
 
     let existing = state.lock().ok().and_then(|m| m.get(&mac).cloned())
@@ -717,7 +721,7 @@ fn same_person(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
-/// `cs326 roster check` -- validate the whole file before anyone shows up,
+/// `classnet roster check` -- validate the whole file before anyone shows up,
 /// rather than discovering bad rows one student at a time at the door.
 fn check_roster() -> i32 {
     let path = format!("{CONF_DIR}/roster.csv");
@@ -807,7 +811,7 @@ fn check_roster() -> i32 {
             enrolled.len() - missing, enrolled.len());
         if missing > 0 {
             println!("Those students will be turned away at the portal. Chase the form, or");
-            println!("register them by hand with: cs326 register <mac> <email> <github>");
+            println!("register them by hand with: classnet register <mac> <email> <github>");
         }
     } else {
         println!("\nNo class list at {epath} -- cannot say who is missing.");
@@ -828,11 +832,11 @@ fn main() {
     let l = match TcpListener::bind(&bind) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("cs326-portal: cannot bind {bind}: {e}");
+            eprintln!("classnet-portal: cannot bind {bind}: {e}");
             std::process::exit(1);
         }
     };
-    println!("cs326-portal listening on {bind}");
+    println!("classnet-portal listening on {bind}");
     for stream in l.incoming().flatten() {
         let (cfg, state) = (cfg.clone(), state.clone());
         std::thread::spawn(move || handle(stream, cfg, state));

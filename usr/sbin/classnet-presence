@@ -1,20 +1,30 @@
 #!/bin/sh
-# cs326-presence -- one attendance sample. Run every minute from cron.
+# classnet-presence -- one attendance sample. Run every minute from cron.
 #
-# Records which MACs are associated to the cs326 APs right now. That is all it
+# Records which MACs are associated to the class APs right now. That is all it
 # does: the AP already tracks association, so presence needs nothing from the
 # student -- no browser tab, no ping, no client software.
 #
 # Format, one line per associated MAC per sample:
 #   <unix-ts> <mac> <connected-seconds> <signal-dbm>
 #
-# `cs326 attendance` stitches these into intervals. Deliberately append-only
+# `classnet attendance` stitches these into intervals. Deliberately append-only
 # and plain text: it is small (30 students x 1/min x 2h = ~3600 lines/session),
 # greppable, and needs no database on a router.
 set -u
-CONF_DIR=/etc/cs326
+CONF_DIR=/etc/classnet
+CONF="$CONF_DIR/classnet.conf"
 ATTEND="$CONF_DIR/attendance"
-[ -d /sys/class/net/br-cs326 ] || exit 0
+
+# CLASS names the bridge and RETAIN_DAYS bounds the logs. Both come from the
+# file `classnet` itself reads, so a renamed class carries the sampler with it
+# rather than leaving it writing to a directory nothing reports on.
+[ -f "$CONF" ] || exit 0
+# shellcheck disable=SC1090
+. "$CONF"
+RETAIN_DAYS="${RETAIN_DAYS:-150}"
+BR="br-$CLASS"
+[ -d "/sys/class/net/$BR" ] || exit 0
 
 # Nothing to record when the student SSID is down.
 [ -f "$CONF_DIR/state-ssid-disabled" ] && exit 0
@@ -23,7 +33,7 @@ mkdir -p "$ATTEND"
 now=$(date +%s)
 day=$(date +%Y-%m-%d)
 
-for i in /sys/class/net/br-cs326/brif/*; do
+for i in "/sys/class/net/$BR"/brif/*; do
 	[ -e "$i" ] || continue
 	iw dev "$(basename "$i")" station dump 2>/dev/null | awk -v ts="$now" '
 		/^Station/          { mac=$2; sig=""; conn="" }

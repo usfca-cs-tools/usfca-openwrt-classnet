@@ -15,7 +15,7 @@ play.rust-lang.org         # the "Run" buttons in the Book / Rust by Example
 # is enough. Its only external assets are Google Fonts, which the `cdn`
 # profile already carries -- turning `cdn` off leaves it working but unstyled.
 
-# Deliberately NOT included -- add with `cs326 allow add <host> docs` if wanted:
+# Deliberately NOT included -- add with `classnet allow add <host> docs` if wanted:
 #   docs.rs             per-crate API documentation.
 #   asciinema.org       the demo recording on the rustlings landing page.
 #   www.rust-lang.org   nav links out of both sites.

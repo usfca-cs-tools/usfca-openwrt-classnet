@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Restore the router to the config captured before cs326 was installed.
+# Restore the router to the config captured before classnet was installed.
 set -euo pipefail
 HOST="${1:-cs326}"
-read -rp "Restore $HOST to its pre-cs326 config? [y/N] " a
+read -rp "Restore $HOST to its pre-classnet config? [y/N] " a
 [[ "$a" == [yY] ]] || exit 0
 ssh "$HOST" 'set -e
   B=/etc/classnet-backup
