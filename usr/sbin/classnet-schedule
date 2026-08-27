@@ -1,0 +1,78 @@
+#!/bin/sh
+# classnet-schedule -- hold the student SSID open only while class is in
+# session. Run every minute from cron.
+#
+# Off until `classnet schedule on`, and deliberately so: this inverts the one
+# safety property the manual switch has. `classnet disable` is an instructor
+# deciding to drop the room; under a schedule the clock decides instead, and
+# every laptop still associated at the end of the window goes with it. A
+# router that began enforcing a timetable the moment it was installed would
+# cut off a class nobody had warned.
+#
+# Windows come from `classnet session windows`, which is the same sessions_for
+# the attendance report is built on. One source, so the network cannot be open
+# at a time that would not be counted, or shut during a time that would.
+set -u
+CONF_DIR=/etc/classnet
+CONF="$CONF_DIR/classnet.conf"
+FLAG_SCHED="$CONF_DIR/state-schedule-on"
+FLAG_OFF="$CONF_DIR/state-ssid-disabled"
+
+[ -f "$CONF" ] || exit 0
+# shellcheck disable=SC1090
+. "$CONF"
+# Students arrive before the hour. Without a lead-in the SSID appears at the
+# same second the period starts, so the first minutes of every class are spent
+# watching people fail to connect.
+LEAD=$(( ${SCHEDULE_LEAD_MIN:-5} * 60 ))
+
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+if [ ! -f "$FLAG_SCHED" ]; then
+	[ "$DRY" = 1 ] && echo "schedule is off -- arm it with: classnet schedule on"
+	exit 0
+fi
+
+now=$(date +%s)
+want=down
+open=""
+# A heredoc rather than a pipe: `while read` in a pipeline runs in a subshell
+# on ash, and the values set in it would not survive the loop.
+while IFS="$(printf '\t')" read -r nm a b; do
+	[ -n "${a:-}" ] && [ -n "${b:-}" ] || continue
+	if [ "$now" -ge "$((a - LEAD))" ] && [ "$now" -le "$b" ]; then
+		want=up; open="$nm"; break
+	fi
+done <<EOF
+$(/usr/sbin/classnet session windows 2>/dev/null)
+EOF
+
+[ -f "$FLAG_OFF" ] && have=down || have=up
+
+if [ "$DRY" = 1 ]; then
+	if [ -n "$open" ]; then
+		echo "  in '$open' now -- $SSID should be up, and is $have"
+	else
+		echo "  no session in progress -- $SSID should be down, and is $have"
+	fi
+	exit 0
+fi
+
+[ "$want" = "$have" ] && exit 0
+
+if [ "$want" = up ]; then
+	logger -t classnet "schedule: opening $SSID for '$open'"
+	/usr/sbin/classnet enable >/dev/null 2>&1
+else
+	# Announced, never silent. This is the half that happens *to* the room
+	# rather than in it, so the count of who was dropped belongs in the log
+	# where `classnet log` will show it next to the wifi events themselves.
+	n=$(for i in "/sys/class/net/br-$CLASS"/brif/*; do
+		[ -e "$i" ] || continue
+		iw dev "$(basename "$i")" station dump 2>/dev/null | grep -c '^Station'
+	done | awk '{s+=$1} END {print s+0}')
+	logger -t classnet "schedule: closing $SSID, no session in progress -- $n device(s) dropped"
+	/usr/sbin/classnet disable >/dev/null 2>&1
+fi
+exit 0

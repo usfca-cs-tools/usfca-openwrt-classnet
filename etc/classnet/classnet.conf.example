@@ -80,6 +80,13 @@ ONLINE_HOST="online.cs326"
 # each scheduled period, so students who linger still count as present.
 SESSION_BUFFER_MIN="5"
 
+# Only read when `classnet schedule on` has armed the timetable. Minutes the
+# student SSID comes up BEFORE each period, so students who arrive early can
+# connect instead of watching it fail until the hour. The tail is
+# SESSION_BUFFER_MIN above, shared with attendance, so nobody is dropped
+# while they still count as present.
+SCHEDULE_LEAD_MIN="5"
+
 # A gap longer than this ends a visit rather than counting through it. A closed
 # lid or a roam between radios is a gap, not a departure.
 SESSION_GAP_MIN="10"

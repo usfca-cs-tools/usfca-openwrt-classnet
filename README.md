@@ -232,6 +232,54 @@ first class through finals, plus a month for grade appeals. Expiry is logged to
 syslog rather than happening silently. A session costs a few hundred KB, so this
 is a policy choice rather than a space one.
 
+### Closing the network between classes
+
+By default `schedule.conf` only decides how attendance is **reported** — the
+student SSID is up until somebody takes it down. `classnet schedule on` makes
+the same periods decide whether the network exists at all:
+
+```sh
+classnet schedule on      # cs245 is up during class periods, down between them
+classnet schedule         # what it would do right now, and what the SSID is
+classnet schedule off     # back to the manual switch
+```
+
+Armed, a one-minute cron job holds the SSID up inside any period in
+`schedule.conf` — plus `SCHEDULE_LEAD_MIN` (default 5) before it starts, so
+students who arrive early can connect, and through `SESSION_BUFFER_MIN` after
+it ends, so nobody is dropped while they still count as present. Outside those
+windows it is down.
+
+**This inverts the one safety property the manual switch has.** `classnet
+disable` is an instructor deciding to drop the room; under a schedule the clock
+decides, and every laptop still associated at the end of the window goes with
+it. That is the point of the feature and also its whole risk, so it ships off,
+it announces each transition to syslog with a count of the devices dropped, and
+`classnet log` shows those lines next to the wifi events themselves:
+
+```
+classnet: schedule: opening cs245 for 'lec-1'
+classnet: schedule: closing cs245, no session in progress -- 24 device(s) dropped
+```
+
+**Working outside the timetable.** An ad-hoc session is the override, and it
+now does what its name always sounded like it did — it opens the network as
+well as the attendance window, immediately rather than at the next tick:
+
+```sh
+classnet session start office-hours   # SSID up, attendance recording
+classnet session end                  # both close together
+```
+
+`classnet enable` still works while a schedule is armed, but the cron re-decides
+within the minute, so it will be undone; the command says so when it runs. To
+hold the network open outside the timetable, start a session.
+
+The windows come from `classnet session windows`, which is the same
+`sessions_for` the attendance report is built on — one source, so the network
+cannot be open at a time that would not be counted, or shut during a time that
+would.
+
 ## What it actually does
 
 **Default-deny by hostname, not by IP range.** A dedicated `dnsmasq` instance on
@@ -324,6 +372,7 @@ classnet session start|end    # an attendance window outside the timetable
 classnet enable | disable     # student SSID and its rules on/off
 classnet lock | unlock        # suspend the allowlist without dropping anyone
 classnet gate on | off        # require registration before the allowlist applies
+classnet schedule on | off    # SSID follows schedule.conf instead of staying up
 ```
 
 `classnet who` prints the whole identity:
@@ -454,9 +503,11 @@ etc/classnet/deny.list         forced NXDOMAIN; beats any broader allow entry
 etc/classnet/garden.list       what an unregistered device may reach (sign-in only)
 etc/classnet/roster.csv        identity -> GitHub username
 etc/classnet/enrolled.csv      the class list, for the missing-students check
-etc/classnet/schedule.conf     class periods, for per-session attendance
+etc/classnet/schedule.conf     class periods: attendance, and optionally the SSID
 etc/classnet/attendance/       one append-only log per day
 usr/sbin/classnet              the CLI
+usr/sbin/classnet-presence     one attendance sample, per minute from cron
+usr/sbin/classnet-schedule     opens and closes the SSID on the timetable, per minute
 portal/                        the sign-in portal (Rust, no dependencies)
 bin/classnet-release           push a git release into selected students' repos
 tests/                         two end-to-end suites

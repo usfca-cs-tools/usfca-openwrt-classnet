@@ -88,7 +88,7 @@ if ssh "$HOST" 'test -f /etc/classnet/classnet.conf' 2>/dev/null; then
   rm -f /tmp/classnet.conf.router
 fi
 ssh "$HOST" 'rm -rf /tmp/classnet-stage && mkdir -p /tmp/classnet-stage'
-PUSH=(etc/classnet usr/sbin/classnet usr/sbin/classnet-presence
+PUSH=(etc/classnet usr/sbin/classnet usr/sbin/classnet-presence usr/sbin/classnet-schedule
       etc/init.d/classnet-portal tests/policy-simtest.sh tests/portal-simtest.sh)
 [ -x "$HERE/usr/sbin/classnet-portal" ] && PUSH+=(usr/sbin/classnet-portal)
 COPYFILE_DISABLE=1 tar -C "$HERE" --exclude='.*' -cf - "${PUSH[@]}" \
@@ -122,7 +122,7 @@ ssh "$HOST" 'set -e
   # the portal binary cannot be overwritten while it is running ("Text file
   # busy"), and a silent failure there leaves the old build in place
   [ -f /tmp/classnet-stage/usr/sbin/classnet-portal ] && /etc/init.d/classnet-portal stop 2>/dev/null
-  for f in classnet-presence classnet-portal; do
+  for f in classnet-presence classnet-schedule classnet-portal; do
     [ -f "/tmp/classnet-stage/usr/sbin/$f" ] && { cp "/tmp/classnet-stage/usr/sbin/$f" /usr/sbin/; chmod +x "/usr/sbin/$f"; }
   done
   if [ -f /tmp/classnet-stage/etc/init.d/classnet-portal ]; then
@@ -136,6 +136,20 @@ ssh "$HOST" 'set -e
     [ -f "$src" ] && { cp "$src" "$dst"; chmod +x "$dst"; }
   done
   rm -rf /tmp/classnet-stage'
+
+say "Cron"
+# Both of these are one-minute jobs and neither was ever installed here, so a
+# fresh router sampled no attendance at all until someone added the line by
+# hand. Idempotent: re-running must not accumulate duplicates.
+ssh "$HOST" 'set -e
+  C=/etc/crontabs/root
+  touch "$C"
+  for j in classnet-presence classnet-schedule; do
+    grep -qF "/usr/sbin/$j" "$C" || echo "* * * * * /usr/sbin/$j" >> "$C"
+  done
+  /etc/init.d/cron enable >/dev/null 2>&1 || true
+  /etc/init.d/cron restart >/dev/null 2>&1 || true
+  echo "  $(grep -c "/usr/sbin/classnet-" "$C") classnet cron entries, cron $(/etc/init.d/cron status 2>&1 | head -1)"'
 
 say "Timezone"
 # The schedule is written in local wall-clock time, so the router has to agree

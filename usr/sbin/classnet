@@ -20,6 +20,7 @@ FLAG_OFF="$CONF_DIR/state-ssid-disabled"
 FLAG_OPEN="$CONF_DIR/state-unlocked"
 FLAG_DBG="$CONF_DIR/state-debug"
 FLAG_GATE="$CONF_DIR/state-gate-on"
+FLAG_SCHED="$CONF_DIR/state-schedule-on"
 GARDEN="$CONF_DIR/garden.list"
 PROBES="$CONF_DIR/probe.list"
 REGTSV="$CONF_DIR/registrations.tsv"
@@ -674,8 +675,15 @@ cmd_apply() {
 
 # ------------------------------------------------------------ ssid on/off ---
 
-cmd_enable()  { rm -f "$FLAG_OFF";  cmd_apply >/dev/null; echo "classnet SSID '$SSID' ENABLED (allowlist active)"; }
-cmd_disable() { touch "$FLAG_OFF";  cmd_apply >/dev/null; echo "classnet SSID '$SSID' DISABLED (staff SSID untouched)"; }
+# A manual switch and a timetable disagree within the minute. Say so, rather
+# than let the cron silently undo what was just typed.
+sched_warn() {
+	[ -f "$FLAG_SCHED" ] || return 0
+	echo "  note: the schedule is on and re-decides this within a minute."
+	echo "  To hold it open outside the timetable: classnet session start [name]"
+}
+cmd_enable()  { rm -f "$FLAG_OFF";  cmd_apply >/dev/null; echo "classnet SSID '$SSID' ENABLED (allowlist active)"; sched_warn; }
+cmd_disable() { touch "$FLAG_OFF";  cmd_apply >/dev/null; echo "classnet SSID '$SSID' DISABLED (staff SSID untouched)"; sched_warn; }
 
 cmd_unlock() {
 	touch "$FLAG_OPEN"; cmd_apply >/dev/null
@@ -694,6 +702,11 @@ cmd_status() {
 	is_unlocked && lk="UNLOCKED (unrestricted)" || lk="locked (allowlist enforced)"
 	echo "SSID          : $SSID ($up), $STAFF_SSID (staff)"
 	echo "Policy        : $lk"
+	if [ -f "$FLAG_SCHED" ]; then
+		echo "Schedule      : ON -- $SSID follows $(basename "$SCHEDULE")"
+	else
+		echo "Schedule      : off ($SSID stays up until classnet enable|disable)"
+	fi
 	echo "Profiles      : $ALWAYS_ON $PROFILES"
 	echo "Allowed names : $(domains | wc -l | tr -d ' ')"
 	echo "Denied names  : $(denied | wc -l | tr -d ' ')"
@@ -1118,14 +1131,16 @@ cmd_session() {
 		[ -z "$open" ] || die "a session started at $(_hm "$(echo "$open" | cut -f1)") is still open; end it first"
 		shift; nm="${*:-adhoc}"
 		printf '%s 0 %s\n' "$(date +%s)" "$nm" >> "$ADHOC"
-		echo "session '$nm' started at $(date +%H:%M) -- end it with: classnet session end" ;;
+		echo "session '$nm' started at $(date +%H:%M) -- end it with: classnet session end"
+		sched_now ;;
 	end)
 		[ -n "$open" ] || die "no session is open"
 		st=$(echo "$open" | cut -f1); nm=$(echo "$open" | cut -f2)
 		awk -v s="$st" -v e="$(date +%s)" '!/^#/ && $1==s && $2==0 {$2=e} {print}' "$ADHOC" > "$ADHOC.new" \
 			&& mv "$ADHOC.new" "$ADHOC"
 		echo "session '$nm' ended at $(date +%H:%M) ($(_hms $(( $(date +%s) - st )) ) elapsed)"
-		echo "See who was present: classnet attendance" ;;
+		echo "See who was present: classnet attendance"
+		sched_now ;;
 	status)
 		if [ -n "$open" ]; then
 			echo "session '$(echo "$open" | cut -f2)' open since $(_hm "$(echo "$open" | cut -f1)")"
@@ -1143,7 +1158,43 @@ cmd_session() {
 					|| echo "  scheduled '$nm' today $(_hm "$a")-$(_hm "$b")"
 			done
 		fi ;;
-	*) die "usage: classnet session start [name] | end | status" ;;
+	windows)
+		# What classnet-schedule reads. Deliberately the same sessions_for the
+		# attendance report uses: two parsers would let the network be open at
+		# a time that is not counted.
+		sessions_for "$(date +%Y-%m-%d)" ;;
+	*) die "usage: classnet session start [name] | end | status | windows" ;;
+	esac
+}
+
+# Re-decide immediately, so `session start` opens the network now rather than
+# up to a minute from now, and `session end` closes it on the same breath.
+sched_now() {
+	[ -f "$FLAG_SCHED" ] || return 0
+	[ -x /usr/sbin/classnet-schedule ] || return 0
+	/usr/sbin/classnet-schedule
+}
+
+# The timetable as an enforcement rather than a report. Ships off, and stays a
+# deliberate act: see classnet-schedule for why.
+cmd_schedule() {
+	case "${1:-}" in
+	on)  strip "$SCHEDULE" 2>/dev/null | grep -q . \
+	         || die "no periods in $SCHEDULE -- nothing to enforce"
+	     touch "$FLAG_SCHED"
+	     echo "schedule ON -- $SSID is open only during the periods in"
+	     echo "$(basename "$SCHEDULE"), or while an ad-hoc session is open."
+	     echo "Outside those it is taken down, dropping every laptop still on it."
+	     sched_now ;;
+	off) rm -f "$FLAG_SCHED"
+	     echo "schedule OFF -- $SSID stays as it is until classnet enable|disable" ;;
+	"")  if [ -f "$FLAG_SCHED" ]; then
+	         echo "schedule is ON"
+	         [ -x /usr/sbin/classnet-schedule ] && /usr/sbin/classnet-schedule --dry-run
+	     else
+	         echo "schedule is OFF -- $SSID is up until you take it down by hand"
+	     fi ;;
+	*)   die "usage: classnet schedule on|off" ;;
 	esac
 }
 
@@ -1176,6 +1227,12 @@ cmd_log() {
 	fi
 	echo "== recent wifi/auth events =="
 	logread | grep -iE "hostapd|PSK-MISMATCH" | tail -10
+	# What classnet itself did without being asked: the schedule opening and
+	# closing the SSID, and attendance logs expiring. Both drop people or data
+	# on a timer, so they belong next to the wifi events rather than only in
+	# syslog where nobody thinks to look.
+	echo "== what classnet did on its own =="
+	logread | grep -F "classnet:" | tail -10
 }
 
 usage() {
@@ -1202,17 +1259,19 @@ classnet -- CS 326 classroom network control
   classnet session start [name]    open an attendance window outside the timetable
   classnet session end
   classnet session status
+  classnet schedule on|off         open the student SSID only during class periods
   classnet gate on|off             require registration before the allowlist applies
   classnet register <MAC> <usf-email> <github> [name]     bind a device by hand
   classnet unregister <MAC>        send a device back to the portal
   classnet forget registrations|attendance|leases|all   clean slate
   classnet debug on|off            log which names the student resolver refuses
-  classnet log                     refused names, allowed lookups, wifi events
+  classnet log                     refused names, wifi events, and what classnet did on its own
 EOF
 }
 
 case "${1:-}" in
 	enable) cmd_enable ;; disable) cmd_disable ;;
+	schedule) shift; cmd_schedule "$@" ;;
 	lock) cmd_lock ;;     unlock) cmd_unlock ;;
 	status) cmd_status ;; apply) cmd_apply ;;  test) cmd_test ;;
 	who) shift; cmd_who "$@" ;;   roster) shift; cmd_roster "$@" ;;
