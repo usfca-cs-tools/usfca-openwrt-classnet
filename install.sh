@@ -97,7 +97,16 @@ ssh "$HOST" 'set -e
   mkdir -p /etc/classnet/allow.d
   S=/tmp/classnet-stage/etc/classnet
   cp "$S"/allow.d/*.list /etc/classnet/allow.d/
-  cp "$S"/deny.list "$S"/static4.list /etc/classnet/
+  cp "$S"/deny.list "$S"/static4.list "$S"/garden.list /etc/classnet/
+  [ -f "$S/groups.txt" ] && [ ! -f /etc/classnet/groups.txt ] && cp "$S/groups.txt" /etc/classnet/
+  # schedule.conf holds your class times and is gitignored like classnet.conf.
+  # Without one, attendance has no sessions to report against.
+  if [ -f "$S/schedule.conf" ]; then
+    cp "$S/schedule.conf" /etc/classnet/schedule.conf
+  elif [ ! -f /etc/classnet/schedule.conf ]; then
+    echo "no schedule.conf -- attendance will report nothing until you add one"
+    echo "  (start from etc/classnet/schedule.conf.example)"
+  fi
   cp "$S/classnet.conf" /etc/classnet/classnet.conf
   n=$(grep -cE "^[0-9a-fA-F][0-9a-fA-F]:" /etc/classnet/staff-macs.list 2>/dev/null || echo 0)
   if [ "${n:-0}" -gt 0 ]; then
@@ -119,11 +128,24 @@ ssh "$HOST" 'set -e
   fi
   # portal.conf holds the OAuth secret and is filled in by hand -- never clobber
   [ -f /etc/classnet/portal.conf ] || cp /etc/classnet/portal.conf.example /etc/classnet/portal.conf 2>/dev/null || true
-  for t in router-simtest:classnet-simtest portal-simtest:classnet-portaltest; do
+  for t in policy-simtest:classnet-simtest portal-simtest:classnet-portaltest; do
     src="/tmp/classnet-stage/tests/${t%%:*}.sh"; dst="/usr/sbin/${t##*:}"
     [ -f "$src" ] && { cp "$src" "$dst"; chmod +x "$dst"; }
   done
   rm -rf /tmp/classnet-stage'
+
+say "Timezone"
+# The schedule is written in local wall-clock time, so the router has to agree
+# with the room about what time it is. A POSIX TZ string carries the DST rules
+# without needing the zoneinfo package.
+ssh "$HOST" 'TZ_WANT=$(sed -n "s/^TIMEZONE=\"\(.*\)\".*/\1/p" /etc/classnet/classnet.conf)
+  ZN_WANT=$(sed -n "s/^ZONENAME=\"\(.*\)\".*/\1/p" /etc/classnet/classnet.conf)
+  if [ -n "$TZ_WANT" ]; then
+    uci set system.@system[0].timezone="$TZ_WANT"
+    [ -n "$ZN_WANT" ] && uci set system.@system[0].zonename="$ZN_WANT"
+    uci commit system && /etc/init.d/system reload >/dev/null 2>&1
+  fi
+  echo "  router clock: $(date)"'
 
 say "Applying"
 ssh "$HOST" 'classnet apply'

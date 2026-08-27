@@ -16,3 +16,4 @@ etc/classnet/state-*
 # router rather than shipping one binary that only suits ours.
 portal/target/
 usr/sbin/classnet-portal
+etc/classnet/schedule.conf

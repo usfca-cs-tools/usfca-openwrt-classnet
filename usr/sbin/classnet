@@ -24,6 +24,8 @@ GARDEN="$CONF_DIR/garden.list"
 REGTSV="$CONF_DIR/registrations.tsv"
 REGMACS="$CONF_DIR/registered.macs"
 ATTEND="$CONF_DIR/attendance"
+SCHEDULE="$CONF_DIR/schedule.conf"
+ADHOC="$ATTEND/sessions.log"
 PORTAL_PORT=8080
 MARK=0x326
 
@@ -47,6 +49,7 @@ echo "$CLASS" | grep -qE '^[a-z][a-z0-9]{1,10}$' \
 	|| die "CLASS must be 2-11 characters, lowercase letters and digits, starting with a letter (got '$CLASS')"
 C="$CLASS"
 : "${COUNTRY:=US}" "${UPSTREAM_DNS:=1.1.1.1}" "${PROFILES:=}"
+: "${SESSION_BUFFER_MIN:=5}" "${SESSION_GAP_MIN:=10}" "${RETAIN_DAYS:=150}"
 : "${STAFF_HIDDEN:=0}" "${ALLOW_TCP:=22 80 443}" "${ALLOW_UDP:=443}"
 
 CLASS_IP="$NET.1"
@@ -824,84 +827,164 @@ cmd_unregister() {
 	echo "unregistered $mac -- it will meet the portal again on its next request"
 }
 
-cmd_attendance() {
-	d="${1:-$(date +%Y-%m-%d)}"
-	f="$ATTEND/$d.log"
-	[ -f "$f" ] || die "no attendance log for $d (looked in $f)"
-	echo "Attendance for $d"
-	printf '  %-16s %-7s %-7s %s\n' GITHUB FIRST LAST TOTAL
-	# Samples are one per minute per MAC. Stitch them into intervals, tolerating
-	# a gap of up to GAPMIN minutes -- a closed lid or a roam between APs is a
-	# gap, not a departure, and reporting those as separate visits would be wrong.
-	awk -v gap="${GAPMIN:-10}" '
-		{ ts=$1; mac=$2
-		  if (!(mac in first)) { first[mac]=ts; }
-		  if (mac in last && ts-last[mac] > gap*60) { total[mac]+=acc[mac]; acc[mac]=0; starts[mac]=ts }
-		  else if (mac in last) { acc[mac]+=ts-last[mac] }
-		  last[mac]=ts }
-		END { for (m in last) printf "%s\t%d\t%d\t%d\n", m, first[m], last[m], total[m]+acc[m] }
-	' "$f" | sort -k4 -rn | while IFS="$(printf '\t')" read -r mac fs ls tot; do
-		id=$(_ident "$mac"); gh=$(echo "$id" | cut -f1)
-		[ -n "$gh" ] || gh="($mac)"
-		printf '  %-16s %-7s %-7s %s\n' "$gh" \
-			"$(date -d "@$fs" +%H:%M 2>/dev/null || date -r "$fs" +%H:%M)" \
-			"$(date -d "@$ls" +%H:%M 2>/dev/null || date -r "$ls" +%H:%M)" \
-			"$(_hms "$tot")"
+# Every session on a date: the scheduled periods whose weekday matches, plus
+# any ad-hoc session that was started that day. Emits "name<TAB>start<TAB>end".
+sessions_for() {
+	d="$1"
+	dow=$(date -d "$d" +%a 2>/dev/null | tr 'A-Z' 'a-z')
+	[ -n "$dow" ] || return 1
+
+	if [ -f "$SCHEDULE" ]; then
+		strip "$SCHEDULE" | while IFS='|' read -r nm days st en; do
+			[ -n "$nm" ] && [ -n "$days" ] || continue
+			echo "$days" | tr ',' '\n' | tr -d ' ' | grep -qix "$dow" || continue
+			a=$(date -D "%Y-%m-%d %H:%M" -d "$d $st" +%s 2>/dev/null) || continue
+			b=$(date -D "%Y-%m-%d %H:%M" -d "$d $en" +%s 2>/dev/null) || continue
+			printf '%s\t%s\t%s\n' "$nm" "$a" "$((b + SESSION_BUFFER_MIN * 60))"
+		done
+	fi
+
+	# Ad-hoc sessions, for work outside the timetable. An open one (end 0) is
+	# reported as running up to now.
+	[ -f "$ADHOC" ] && awk -v d="$d" -v now="$(date +%s)" '
+		!/^#/ && NF>=3 {
+			e = ($2 == 0 ? now : $2)
+			if (strftime("%Y-%m-%d", $1) == d) {
+				name = $3; for (i = 4; i <= NF; i++) name = name " " $i
+				printf "%s\t%s\t%s\n", name, $1, e
+			}
+		}' "$ADHOC" 2>/dev/null
+	return 0
+}
+
+# Samples inside a window, stitched into one visit per device.
+# Emits "mac<TAB>first<TAB>last<TAB>seconds".
+_stitch() {
+	awk -v a="$2" -v b="$3" -v gap="$((SESSION_GAP_MIN * 60))" '
+		$1 >= a && $1 <= b {
+			ts = $1; mac = $2
+			if (!(mac in first)) first[mac] = ts
+			else { d = ts - last[mac]; if (d <= gap) acc[mac] += d }
+			last[mac] = ts
+		}
+		END { for (m in last) printf "%s\t%d\t%d\t%d\n", m, first[m], last[m], acc[m] }
+	' "$1" 2>/dev/null
+}
+
+_hm() { date -d "@$1" +%H:%M 2>/dev/null; }
+
+# One date, every session on it.
+_report_date() {
+	d="$1"; only="${2:-}"; f="$ATTEND/$d.log"
+	[ -f "$f" ] || return 0
+	sessions_for "$d" | sort -k2 -n | while IFS="$(printf '\t')" read -r nm a b; do
+		rows=$(_stitch "$f" "$a" "$b")
+		[ -n "$rows" ] || continue
+		if [ -z "$only" ]; then
+			printf '\n%s  %-8s %s-%s\n' "$(date -d "$d" '+%a %Y-%m-%d')" "$nm" "$(_hm "$a")" "$(_hm "$b")"
+			printf '  %-16s %-7s %-7s %s\n' GITHUB FIRST LAST TOTAL
+		fi
+		# Alphabetical by username: this gets read against a roster, and a list
+		# ordered by minutes-present is the wrong shape for that.
+		echo "$rows" | while IFS="$(printf '\t')" read -r mac fs ls tot; do
+			id=$(_ident "$mac"); gh=$(echo "$id" | cut -f1)
+			[ -n "$gh" ] || gh="($mac)"
+			if [ -n "$only" ]; then
+				[ "$gh" = "$only" ] || continue
+				printf '  %-12s %-9s %-7s %-7s %s\n' "$d" "$nm" "$(_hm "$fs")" "$(_hm "$ls")" "$(_hms "$tot")"
+			else
+				printf '  %-16s %-7s %-7s %s\n' "$gh" "$(_hm "$fs")" "$(_hm "$ls")" "$(_hms "$tot")"
+			fi
+		done | sort
 	done
+}
+
+_dates() {  # every date with a log, oldest first
+	ls "$ATTEND"/*.log 2>/dev/null | sed -e 's|.*/||' -e 's|\.log$||' \
+		| grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort
+}
+
+cmd_attendance() {
+	case "${1:-}" in
+	--all)     for d in $(_dates); do _report_date "$d"; done; echo ;;
+	--since)   [ -n "${2:-}" ] || die "usage: classnet attendance --since <YYYY-MM-DD>"
+	           for d in $(_dates); do [ "$d" \< "$2" ] || _report_date "$d"; done; echo ;;
+	--student) [ -n "${2:-}" ] || die "usage: classnet attendance --student <github-username>"
+	           who=$(registrations | awk -F'\t' -v g="$2" '$4==g {printf "%s <%s>", $3, $2; exit}')
+	           echo "$2${who:+  ($who)}"
+	           printf '  %-12s %-9s %-7s %-7s %s\n' DATE SESSION FIRST LAST TOTAL
+	           n=0
+	           for d in $(_dates); do _report_date "$d" "$2"; done \
+	             | tee /tmp/.cn-stu | grep -c . >/dev/null
+	           cat /tmp/.cn-stu
+	           n=$(grep -c . /tmp/.cn-stu 2>/dev/null || echo 0)
+	           echo; echo "  $n session(s) attended"; rm -f /tmp/.cn-stu ;;
+	"")        d=$(date +%Y-%m-%d)
+	           sessions_for "$d" | grep -q . || { echo "No session scheduled for $(date '+%A'), and none started by hand."; echo "Start one with: classnet session start [name]"; return 0; }
+	           echo "Attendance for $d"; _report_date "$d"; echo ;;
+	*)         echo "Attendance for $1"; _report_date "$1"; echo ;;
+	esac
 }
 
 cmd_export() {
-	d="${1:-$(date +%Y-%m-%d)}"
-	echo "date,usf_user,github,email,name,first_seen,last_seen,minutes"
-	f="$ATTEND/$d.log"; [ -f "$f" ] || return 0
-	awk -v gap="${GAPMIN:-10}" '
-		{ ts=$1; mac=$2
-		  if (!(mac in first)) first[mac]=ts
-		  if (mac in last && ts-last[mac] <= gap*60) acc[mac]+=ts-last[mac]
-		  last[mac]=ts }
-		END { for (m in last) printf "%s\t%d\t%d\t%d\n", m, first[m], last[m], acc[m] }
-	' "$f" | while IFS="$(printf '\t')" read -r mac fs ls tot; do
-		id=$(_ident "$mac")
-		gh=$(echo "$id" | cut -f1); nm=$(echo "$id" | cut -f2); em=$(echo "$id" | cut -f3)
-		printf '%s,%s,%s,"%s",%s,%s,%d\n' "$d" "${gh:-}" "${em:-}" "${nm:-}" \
-			"$(date -d "@$fs" +%H:%M 2>/dev/null || date -r "$fs" +%H:%M)" \
-			"$(date -d "@$ls" +%H:%M 2>/dev/null || date -r "$ls" +%H:%M)" \
-			"$((tot/60))"
+	echo "date,session,usf_user,github,email,name,first_seen,last_seen,minutes"
+	case "${1:-}" in
+	--all)   set -- $(_dates) ;;
+	--since) shift; set -- $(for d in $(_dates); do [ "$d" \< "$1" ] || echo "$d"; done) ;;
+	"")      set -- "$(date +%Y-%m-%d)" ;;
+	esac
+	for d in "$@"; do
+		f="$ATTEND/$d.log"; [ -f "$f" ] || continue
+		sessions_for "$d" | sort -k2 -n | while IFS="$(printf '\t')" read -r nm a b; do
+			_stitch "$f" "$a" "$b" | while IFS="$(printf '\t')" read -r mac fs ls tot; do
+				id=$(_ident "$mac")
+				gh=$(echo "$id" | cut -f1); nmn=$(echo "$id" | cut -f2); em=$(echo "$id" | cut -f3)
+				printf '%s,%s,%s,%s,%s,"%s",%s,%s,%d\n' \
+					"$d" "$nm" "${em%%@*}" "${gh:-}" "${em:-}" "${nmn:-}" \
+					"$(_hm "$fs")" "$(_hm "$ls")" "$((tot / 60))"
+			done
+		done
 	done
 }
 
-# Start-of-semester clean slate. Registrations are identity records about real
-# students, so this asks first and names what it is about to erase.
-cmd_forget() {
-	what="${1:-}"
-	case "$what" in
-	registrations|attendance|leases|all) ;;
-	*) echo "usage: classnet forget registrations|attendance|leases|all"
-	   echo
-	   echo "  registrations  every MAC->student binding ($(registrations | wc -l | tr -d " ") now)"
-	   echo "  attendance     every session log ($(ls "$ATTEND" 2>/dev/null | wc -l | tr -d " ") day(s))"
-	   echo "  leases         DHCP leases on the student network"
-	   echo "  all            all three"
-	   return 1 ;;
+# Work outside the timetable -- a makeup, an office-hours session, an exam
+# review -- still needs an attendance window. This opens one.
+cmd_session() {
+	mkdir -p "$ATTEND"
+	[ -f "$ADHOC" ] || printf '# start_unix end_unix name\n' > "$ADHOC"
+	open=$(awk '!/^#/ && NF>=3 && $2==0 {print $1"\t"$3; exit}' "$ADHOC" 2>/dev/null)
+	case "${1:-status}" in
+	start)
+		[ -z "$open" ] || die "a session started at $(_hm "$(echo "$open" | cut -f1)") is still open; end it first"
+		shift; nm="${*:-adhoc}"
+		printf '%s 0 %s\n' "$(date +%s)" "$nm" >> "$ADHOC"
+		echo "session '$nm' started at $(date +%H:%M) -- end it with: classnet session end" ;;
+	end)
+		[ -n "$open" ] || die "no session is open"
+		st=$(echo "$open" | cut -f1); nm=$(echo "$open" | cut -f2)
+		awk -v s="$st" -v e="$(date +%s)" '!/^#/ && $1==s && $2==0 {$2=e} {print}' "$ADHOC" > "$ADHOC.new" \
+			&& mv "$ADHOC.new" "$ADHOC"
+		echo "session '$nm' ended at $(date +%H:%M) ($(_hms $(( $(date +%s) - st )) ) elapsed)"
+		echo "See who was present: classnet attendance" ;;
+	status)
+		if [ -n "$open" ]; then
+			echo "session '$(echo "$open" | cut -f2)' open since $(_hm "$(echo "$open" | cut -f1)")"
+		else
+			d=$(date +%Y-%m-%d)
+			echo "no ad-hoc session open"
+			if ! sessions_for "$d" | grep -q .; then
+				echo "  nothing scheduled on a $(date '+%A') either"
+				echo "  start one with: classnet session start [name]"
+			fi
+			sessions_for "$d" | while IFS="$(printf '\t')" read -r nm a b; do
+				now=$(date +%s)
+				[ "$now" -ge "$a" ] && [ "$now" -le "$b" ] \
+					&& echo "  scheduled '$nm' is running now ($(_hm "$a")-$(_hm "$b"))" \
+					|| echo "  scheduled '$nm' today $(_hm "$a")-$(_hm "$b")"
+			done
+		fi ;;
+	*) die "usage: classnet session start [name] | end | status" ;;
 	esac
-	printf "Erase %s? This cannot be undone. [y/N] " "$what"
-	read -r a; case "$a" in y|Y) ;; *) echo "cancelled"; return 0 ;; esac
-
-	if [ "$what" = registrations ] || [ "$what" = all ]; then
-		printf '# mac\temail\tname\tgithub\tregistered_at\n' > "$REGTSV"
-		sync_macs
-		nft flush set inet fw4 ${C}_reg 2>/dev/null
-		echo "  registrations cleared -- every device meets the portal again"
-	fi
-	if [ "$what" = attendance ] || [ "$what" = all ]; then
-		rm -f "$ATTEND"/*.log 2>/dev/null
-		echo "  attendance logs cleared"
-	fi
-	if [ "$what" = leases ] || [ "$what" = all ]; then
-		: > /tmp/dhcp.${C}.leases
-		/etc/init.d/dnsmasq restart >/dev/null 2>&1
-		echo "  DHCP leases cleared"
-	fi
 }
 
 cmd_gate() {
@@ -947,8 +1030,15 @@ classnet -- CS 326 classroom network control
   classnet who                     who is in the room right now, and for how long
   classnet roster                  every registered student and device
   classnet roster check            validate roster.csv against GitHub
-  classnet attendance [date]       per-student intervals and totals for a session
-  classnet export [date]           the same as CSV
+  classnet attendance              today's sessions
+  classnet attendance <date>       one date
+  classnet attendance --all        every session on record
+  classnet attendance --since <date>
+  classnet attendance --student <github>   one person across the term
+  classnet export [--all|--since <date>|<date>]   the same as CSV
+  classnet session start [name]    open an attendance window outside the timetable
+  classnet session end
+  classnet session status
   classnet gate on|off             require registration before the allowlist applies
   classnet register <MAC> <usf-email> <github> [name]     bind a device by hand
   classnet unregister <MAC>        send a device back to the portal
@@ -968,6 +1058,7 @@ case "${1:-}" in
 	unregister) shift; cmd_unregister "$@" ;;
 	forget) shift; cmd_forget "$@" ;;
 	attendance) shift; cmd_attendance "$@" ;;
+	session) shift; cmd_session "$@" ;;
 	export) shift; cmd_export "$@" ;;
 	staff) shift; cmd_staff "$@" ;;
 	allow) shift; cmd_allow "$@" ;;

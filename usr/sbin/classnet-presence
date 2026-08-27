@@ -31,6 +31,10 @@ for i in /sys/class/net/br-cs326/brif/*; do
 		/connected time/    { conn=$3; if (mac != "") print ts, mac, conn, sig }'
 done | sort -u >> "$ATTEND/$day.log"
 
-# Keep a semester, not forever.
-find "$ATTEND" -name '*.log' -mtime +140 -delete 2>/dev/null
+# Keep a term, not forever. Expiry is announced rather than silent, so a log
+# disappearing before grades are final is something you find out about.
+find "$ATTEND" -name '*.log' -mtime +"$RETAIN_DAYS" 2>/dev/null | while read -r old; do
+	logger -t classnet "attendance log $(basename "$old") expired after $RETAIN_DAYS days"
+	rm -f "$old"
+done
 exit 0

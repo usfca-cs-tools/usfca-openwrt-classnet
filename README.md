@@ -84,14 +84,41 @@ $ classnet who
   aa:bb:cc:dd:ee:ff  0:03   (unregistered -- has not signed in)
 
 $ classnet attendance
+Thu 2026-09-03  lec-1    08:00-09:50
   GITHUB           FIRST   LAST    TOTAL
-  jsmith           14:02   15:44   1:42
-  alopez           14:31   15:44   1:11
+  alopez           08:30   09:44   1:14
+  jsmith           08:02   09:44   1:42
+
+Thu 2026-09-03  lec-2    14:40-16:30
+  GITHUB           FIRST   LAST    TOTAL
+  kwong            14:41   16:20   1:39
 ```
 
 Attendance is derived from the access point's own association table, so it
 costs a student nothing and cannot be forgotten. A closed lid or a roam between
 radios is stitched back into one visit rather than reported as two.
+
+**Attendance accumulates over the term** — one log per day, sampled every
+minute, reported per *session* rather than per calendar day:
+
+```sh
+classnet attendance                       # today's sessions
+classnet attendance 2026-09-03            # one date
+classnet attendance --all                 # every session on record
+classnet attendance --since 2026-10-01
+classnet attendance --student jsmith      # one person across the term
+classnet export --all > attendance.csv    # for the gradebook
+```
+
+```sh
+$ classnet attendance --student jsmith
+jsmith  (Jane Smith <jsmith@example.edu>)
+  DATE         SESSION   FIRST   LAST    TOTAL
+  2026-09-03   lec-1     08:02   09:44   1:42
+  2026-09-04   lab-1     13:05   14:28   1:23
+
+  2 session(s) attended
+```
 
 **When something is wrong mid-class**, three escape hatches, in increasing
 order of bluntness:
@@ -104,6 +131,45 @@ classnet disable    # take the student SSID down entirely
 
 `classnet register <mac> <email> <github>` registers by hand a laptop that
 cannot get through the portal. Keep it within reach for the first session.
+
+## Sessions
+
+Attendance is reported against **class periods**, not calendar days. Without
+that, a laptop that happens to be near the router at 9am becomes an attendance
+record, and two sections meeting on one day merge into a single blob.
+
+Periods live in `schedule.conf`:
+
+```
+lec-1|tue,thu|08:00|09:45
+lec-2|tue,thu|14:40|16:25
+lab-1|fri|13:00|14:30
+lab-2|fri|14:40|16:10
+```
+
+`SESSION_BUFFER_MIN` (default 5) extends each period at the end, so students who
+linger still count. Sections may overlap; a student is reported under every
+session whose window they were connected for.
+
+Work outside the timetable — a makeup, office hours, an exam review — gets its
+own window on demand:
+
+```sh
+classnet session start office-hours
+...
+classnet session end
+classnet session status
+```
+
+These times are the router's **local** wall clock, so `install.sh` sets its
+timezone from `TIMEZONE` in `classnet.conf` (a POSIX string, so DST is handled
+without the zoneinfo package). A router left on UTC will file every session
+under the wrong hours.
+
+Logs are kept for `RETAIN_DAYS`, defaulting to 150 — a USF semester from the
+first class through finals, plus a month for grade appeals. Expiry is logged to
+syslog rather than happening silently. A session costs a few hundred KB, so this
+is a policy choice rather than a space one.
 
 ## What it actually does
 
@@ -190,8 +256,9 @@ was refused, which beats guessing.
 ```sh
 classnet who                  # who is in the room, and for how long
 classnet roster               # everyone who has registered a device
-classnet attendance [date]    # sessions stitched into intervals
-classnet export [date]        # the same as CSV
+classnet attendance           # today's sessions; also --all/--since/--student
+classnet export --all         # the whole term as CSV
+classnet session start|end    # an attendance window outside the timetable
 
 classnet enable | disable     # student SSID and its rules on/off
 classnet lock | unlock        # suspend the allowlist without dropping anyone
@@ -293,6 +360,8 @@ etc/classnet/deny.list         forced NXDOMAIN; beats any broader allow entry
 etc/classnet/garden.list       what an unregistered device may reach (sign-in only)
 etc/classnet/roster.csv        identity -> GitHub username
 etc/classnet/enrolled.csv      the class list, for the missing-students check
+etc/classnet/schedule.conf     class periods, for per-session attendance
+etc/classnet/attendance/       one append-only log per day
 usr/sbin/classnet              the CLI
 portal/                        the sign-in portal (Rust, no dependencies)
 bin/classnet-release           push a git release into selected students' repos

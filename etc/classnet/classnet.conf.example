@@ -22,6 +22,14 @@ STAFF_HIDDEN="0"          # 1 = do not broadcast
 # ---- Radios ----------------------------------------------------------------
 COUNTRY="US"
 
+# ---- Clock -----------------------------------------------------------------
+# schedule.conf is written in local wall-clock time, so the router must agree
+# with the room. A POSIX TZ string carries the DST rules with no extra package.
+#   US Pacific  PST8PDT,M3.2.0,M11.1.0      US Eastern  EST5EDT,M3.2.0,M11.1.0
+#   US Central  CST6CDT,M3.2.0,M11.1.0      US Mountain MST7MDT,M3.2.0,M11.1.0
+TIMEZONE="PST8PDT,M3.2.0,M11.1.0"
+ZONENAME="America/Los_Angeles"
+
 # ---- Upstream resolvers, used for allowlisted names only -------------------
 UPSTREAM_DNS="1.1.1.1 9.9.9.9"
 
@@ -35,6 +43,20 @@ ALLOWED_DOMAIN="usfca.edu"
 # Shipped: rust docs cdn portal chat setup
 # Write your own: put hosts in allow.d/60-<name>.list and add <name> here.
 PROFILES="rust docs cdn portal"
+
+# ---- Sessions and attendance ----------------------------------------------
+# Scheduled class periods live in schedule.conf. Minutes added to the end of
+# each scheduled period, so students who linger still count as present.
+SESSION_BUFFER_MIN="5"
+
+# A gap longer than this ends a visit rather than counting through it. A closed
+# lid or a roam between radios is a gap, not a departure.
+SESSION_GAP_MIN="10"
+
+# How long attendance logs are kept. The default covers a USF semester from the
+# first class through finals, plus a month for grade appeals. Logs are a few
+# hundred KB per session, so this is a policy choice, not a space one.
+RETAIN_DAYS="150"
 
 # Ports students may reach on allowlisted hosts.
 ALLOW_TCP="22 80 443"

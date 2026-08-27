@@ -1,0 +1,21 @@
+# Scheduled class periods. Attendance is reported per session rather than per
+# calendar day, so a laptop that happens to be near the router at 9am does not
+# turn into an attendance record.
+#
+#   name|days|start|end
+#
+# days   comma-separated, mon tue wed thu fri sat sun
+# start  24-hour local time, HH:MM
+# end    24-hour local time; SESSION_BUFFER_MIN in classnet.conf is added to it,
+#        so students who linger a few minutes still count as present
+#
+# Sections may overlap in time; a student is reported under every session whose
+# window they were connected for. Times are the router's local time, so set the
+# router's timezone (install.sh does this).
+#
+# Install as /etc/classnet/schedule.conf.
+
+lec-1|tue,thu|08:00|09:45
+lec-2|tue,thu|14:40|16:25
+lab-1|fri|13:00|14:30
+lab-2|fri|14:40|16:10
