@@ -1,12 +1,14 @@
-# Tell classnet-schedule the wall clock can be trusted.
+# Tell classnet's timed jobs -- the schedule and the attendance sampler --
+# that the wall clock can be trusted.
 #
 # These boards have no RTC. At boot sysfixtime restores the clock from the
 # newest mtime under /etc, so the router comes back believing it is whenever it
 # last wrote a file -- stale by exactly the length of the power cut. A schedule
 # acting on that can take the SSID down in the middle of a class, which is the
-# one failure this feature must not have.
+# one failure this feature must not have; a sampler acting on it files minutes
+# under the wrong day.
 #
-# So the schedule holds until ntpd says the time is real. Same gate dnsmasq
+# So both hold until ntpd says the time is real. Same gate dnsmasq
 # uses before it will trust a DNSSEC signature; see 25-dnsmasqsec beside this.
 TIMEVALIDFILE=/var/state/classnet-clock
 
@@ -15,7 +17,7 @@ TIMEVALIDFILE=/var/state/classnet-clock
 [ -f "$TIMEVALIDFILE" ] || {
 	mkdir -p /var/state
 	echo "ntpd says time is valid" > "$TIMEVALIDFILE"
-	logger -t classnet "clock confirmed by ntpd -- schedule is live"
+	logger -t classnet "clock confirmed by ntpd -- schedule live, attendance recording normally"
 	# Decide now rather than up to a minute from now: after an outage during
 	# class, that minute is the one the room is waiting through.
 	[ -x /usr/sbin/classnet-schedule ] && /usr/sbin/classnet-schedule

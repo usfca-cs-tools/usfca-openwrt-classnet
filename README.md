@@ -300,6 +300,14 @@ stays held until it can — the network keeps whatever state it had rather than
 guessing. `classnet schedule` reports the hold, so it is visible rather than
 mysterious.
 
+**Attendance is gated on the same signal**, for the same reason: a sample
+stamped from an unsynced clock files minutes under the wrong day and stitches
+intervals that never happened. While the clock is unconfirmed the sampler keeps
+running but writes to `attendance/unverified.log` — which MACs were associated
+is true whatever the clock thinks, so the data is kept rather than dropped.
+Reports read only files named `YYYY-MM-DD`, so nothing unverified reaches
+`classnet attendance` or `classnet export` until you go looking for it.
+
 The windows come from `classnet session windows`, which is the same
 `sessions_for` the attendance report is built on — one source, so the network
 cannot be open at a time that would not be counted, or shut during a time that
@@ -530,6 +538,7 @@ etc/classnet/roster.csv        identity -> GitHub username
 etc/classnet/enrolled.csv      the class list, for the missing-students check
 etc/classnet/schedule.conf     class periods: attendance, and optionally the SSID
 etc/classnet/attendance/       one append-only log per day
+                               (plus unverified.log, samples taken before ntpd synced)
 usr/sbin/classnet              the CLI
 usr/sbin/classnet-presence     one attendance sample, per minute from cron
 usr/sbin/classnet-schedule     opens and closes the SSID on the timetable, per minute

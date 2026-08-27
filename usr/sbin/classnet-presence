@@ -33,13 +33,34 @@ mkdir -p "$ATTEND"
 now=$(date +%s)
 day=$(date +%Y-%m-%d)
 
+# Same clock gate the schedule uses: no RTC on these boards, so after a reboot
+# the time is whatever sysfixtime restored from the newest mtime under /etc.
+# Stamping samples with that files minutes under the wrong day and stitches
+# intervals that never happened.
+#
+# The samples are still worth keeping -- which MACs were associated is true
+# regardless of what the clock thinks -- so they go to a file named for no
+# date. `classnet attendance` reads only files named YYYY-MM-DD, so these stay
+# out of every report until someone looks at them deliberately.
+CLOCK=/var/state/classnet-clock
+if [ -f "$CLOCK" ]; then
+	out="$ATTEND/$day.log"
+else
+	out="$ATTEND/unverified.log"
+	if [ ! -f "$CLOCK-presence-warned" ]; then
+		mkdir -p /var/state
+		: > "$CLOCK-presence-warned"
+		logger -t classnet "presence: clock unconfirmed by ntpd -- samples going to unverified.log, not $day.log"
+	fi
+fi
+
 for i in "/sys/class/net/$BR"/brif/*; do
 	[ -e "$i" ] || continue
 	iw dev "$(basename "$i")" station dump 2>/dev/null | awk -v ts="$now" '
 		/^Station/          { mac=$2; sig=""; conn="" }
 		/^\tsignal:/        { sig=$2 }
 		/connected time/    { conn=$3; if (mac != "") print ts, mac, conn, sig }'
-done | sort -u >> "$ATTEND/$day.log"
+done | sort -u >> "$out"
 
 # Keep a term, not forever. Expiry is announced rather than silent, so a log
 # disappearing before grades are final is something you find out about.
