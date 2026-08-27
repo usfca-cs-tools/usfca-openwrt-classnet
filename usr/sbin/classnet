@@ -21,6 +21,7 @@ FLAG_OPEN="$CONF_DIR/state-unlocked"
 FLAG_DBG="$CONF_DIR/state-debug"
 FLAG_GATE="$CONF_DIR/state-gate-on"
 GARDEN="$CONF_DIR/garden.list"
+PROBES="$CONF_DIR/probe.list"
 REGTSV="$CONF_DIR/registrations.tsv"
 REGMACS="$CONF_DIR/registered.macs"
 ATTEND="$CONF_DIR/attendance"
@@ -49,7 +50,7 @@ echo "$CLASS" | grep -qE '^[a-z][a-z0-9]{1,10}$' \
 	|| die "CLASS must be 2-11 characters, lowercase letters and digits, starting with a letter (got '$CLASS')"
 C="$CLASS"
 : "${COUNTRY:=US}" "${UPSTREAM_DNS:=1.1.1.1}" "${PROFILES:=}"
-: "${SESSION_BUFFER_MIN:=5}" "${SESSION_GAP_MIN:=10}" "${RETAIN_DAYS:=150}"
+: "${CAPTIVE_POPUP:=0}" "${SESSION_BUFFER_MIN:=5}" "${SESSION_GAP_MIN:=10}" "${RETAIN_DAYS:=150}"
 : "${STAFF_HIDDEN:=0}" "${ALLOW_TCP:=22 80 443}" "${ALLOW_UDP:=443}"
 
 CLASS_IP="$NET.1"
@@ -70,6 +71,7 @@ is_debug()   { [ -f "$FLAG_DBG" ]; }
 gate_on()    { [ -f "$FLAG_GATE" ]; }
 
 garden_domains(){ [ -f "$GARDEN" ] && strip "$GARDEN" | awk '!s[$0]++'; }
+probe_domains() { [ -f "$PROBES" ] && strip "$PROBES" | awk '!s[$0]++'; }
 registrations() { [ -f "$REGTSV" ] && grep -v '^#' "$REGTSV" 2>/dev/null | grep -v '^$'; }
 
 profile_enabled() {
@@ -214,6 +216,12 @@ apply_dhcp() {
 		done
 	done
 
+	probe_domains | while read -r d; do
+		for u in $UPSTREAM_DNS; do
+			uci add_list "dhcp.${C}.server=/$d/$u"
+		done
+	done
+
 	# denylist: empty address == NXDOMAIN, and more specific than any
 	# broader allow entry someone might add later.
 	denied | while read -r d; do
@@ -249,6 +257,16 @@ apply_dhcp() {
 	uci set dhcp.${C}_gipset.family='4'
 	garden_domains | while read -r d; do
 		uci add_list "dhcp.${C}_gipset.domain=$d"
+	done
+
+	uci set dhcp.${C}_pipset=ipset
+	uci set dhcp.${C}_pipset.instance="$C"
+	uci add_list dhcp.${C}_pipset.name="${C}_probe4"
+	uci set dhcp.${C}_pipset.table='fw4'
+	uci set dhcp.${C}_pipset.table_family='inet'
+	uci set dhcp.${C}_pipset.family='4'
+	probe_domains | while read -r d; do
+		uci add_list "dhcp.${C}_pipset.domain=$d"
 	done
 
 	uci set dhcp.${C}_pool=dhcp
@@ -332,6 +350,12 @@ apply_firewall() {
 	uci add_list firewall.${C}_set_gar.match='dest_ip'
 	uci set firewall.${C}_set_gar.timeout='86400'
 
+	uci set firewall.${C}_set_probe=ipset
+	uci set firewall.${C}_set_probe.name="${C}_probe4"
+	uci set firewall.${C}_set_probe.family='ipv4'
+	uci add_list firewall.${C}_set_probe.match='dest_ip'
+	uci set firewall.${C}_set_probe.timeout='86400'
+
 	uci set firewall.${C}_zone=zone
 	uci set firewall.${C}_zone.name="$C"
 	uci add_list firewall.${C}_zone.network="$C"
@@ -402,10 +426,23 @@ apply_firewall() {
 		_allow ${C}_allow_net ${C}_net4    "80 443"     "$ALLOW_UDP" "$MARK"
 		# unregistered devices reach the sign-in garden and nothing else
 		_allow ${C}_garden    ${C}_garden4 "80 443"     "443"        "!$MARK"
+		# Let the OS connectivity check succeed, registered or not. Without it
+		# macOS decides the network is captive and will not let the browser out
+		# at all -- including to the sign-in page the student needs -- and after
+		# sign-in it would keep insisting there is no Internet.
+		_allow ${C}_probe     ${C}_probe4  "80 443"     "443"
 
 		# ...and their plain-HTTP goes to the portal, which is what makes the
 		# captive-portal sheet open by itself. A redirect can match the MAC set
 		# directly, so this needs no mark and no ordering assumption.
+		#
+		# Off by default. DNAT runs in prerouting, before the forward rules, so
+		# it catches the OS connectivity probe as well; macOS then flags the
+		# network captive and refuses to let Safari reach the sign-in host at
+		# all. The pop-up appears and sign-in cannot be completed from it --
+		# verified: DNS resolved and not one packet left the Mac. A sign-in
+		# that cannot be completed is worse than one that must be announced.
+		if [ "$CAPTIVE_POPUP" = 1 ]; then
 		uci set firewall.${C}_portal=redirect
 		uci set firewall.${C}_portal.name="$C-portal-intercept"
 		uci set firewall.${C}_portal.src="$C"
@@ -415,8 +452,23 @@ apply_firewall() {
 		uci set firewall.${C}_portal.dest_port="$PORTAL_PORT"
 		uci set firewall.${C}_portal.ipset="!${C}_reg"
 		uci set firewall.${C}_portal.target='DNAT'
+		fi
 
 		_svc ${C}_in_portal "$C" tcp "$PORTAL_PORT" "$C portal"
+
+		# Plain http to the router itself lands on the portal, so the address a
+		# student is given is just the router IP with no port. src_dip keeps this
+		# to packets already addressed here: it is not interception, and in
+		# particular it leaves the OS connectivity probe alone.
+		uci set firewall.${C}_portal80=redirect
+		uci set firewall.${C}_portal80.name="$C-portal-on-80"
+		uci set firewall.${C}_portal80.src="$C"
+		uci set firewall.${C}_portal80.proto=tcp
+		uci set firewall.${C}_portal80.src_dip="$CLASS_IP"
+		uci set firewall.${C}_portal80.src_dport=80
+		uci set firewall.${C}_portal80.dest_ip="$CLASS_IP"
+		uci set firewall.${C}_portal80.dest_port="$PORTAL_PORT"
+		uci set firewall.${C}_portal80.target=DNAT
 	else
 		_allow ${C}_allow_dns ${C}_dns4 "$ALLOW_TCP" "$ALLOW_UDP"
 		_allow ${C}_allow_net ${C}_net4 "80 443"     "$ALLOW_UDP"

@@ -35,10 +35,22 @@ about thirty seconds, entirely on the laptop in front of them.
  └────────────────────────────────┘
 ```
 
-**No second device is needed.** The button opens Google in the same window with
-the code already filled in. If a captive-portal sheet refuses to follow links —
-some do — they can open Safari and go to `www.google.com/device` instead, and
-a phone works but is never required.
+**No second device is needed**, and no app. They read the code, open their own
+browser, and approve at Google — where they are already signed in, so it is an
+account picker rather than a password.
+
+By default the Wi-Fi sign-in sheet does **not** pop up, and that is deliberate.
+Intercepting the OS connectivity probe is what makes it appear, and macOS then
+flags the network captive and refuses to let Safari reach the sign-in host at
+all — the pop-up shows up and sign-in cannot be completed from it. So students
+are told the router's address instead:
+
+```
+Join cs245, then open http://192.168.63.1 in your browser
+```
+
+Set `CAPTIVE_POPUP="1"` to trade back: the sheet appears on its own, and macOS
+users hit the wall above.
 
 The exchange with Google runs on the router, not in the page, so a student who
 closes the sheet or wanders off mid-sign-in is still let through the moment they

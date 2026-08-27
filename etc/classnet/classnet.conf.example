@@ -40,9 +40,20 @@ ALLOWED_DOMAIN="usfca.edu"
 
 # ---- What students may reach ----------------------------------------------
 # Each name is a file in allow.d/. core, github and site are always on.
-# Shipped: rust docs cdn portal chat setup
+# Shipped: rust docs cdn chat setup
 # Write your own: put hosts in allow.d/60-<name>.list and add <name> here.
-PROFILES="rust docs cdn portal"
+PROFILES="rust docs cdn"
+
+# ---- Sign-in discovery -----------------------------------------------------
+# 1 redirects unregistered devices' plain HTTP to the portal, so the Wi-Fi
+# sign-in sheet opens by itself.
+#
+# It defaults to 0 because on macOS that redirect also catches the OS
+# connectivity probe: the system then flags the network captive and refuses to
+# let Safari reach the sign-in host, so the pop-up appears and sign-in cannot
+# be completed from it. With 0 there is no pop-up, and students are told to
+# open the router's address in their browser.
+CAPTIVE_POPUP="0"
 
 # ---- Sessions and attendance ----------------------------------------------
 # Scheduled class periods live in schedule.conf. Minutes added to the end of

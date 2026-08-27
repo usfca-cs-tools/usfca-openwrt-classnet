@@ -1,7 +1,0 @@
-# profile: portal
-# Captive-portal probes. Without them laptops flag the network "no Internet",
-# and some OSes then deprioritise it or nag with a portal popup.
-captive.apple.com
-connectivitycheck.gstatic.com
-www.msftconnecttest.com
-detectportal.firefox.com

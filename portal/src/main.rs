@@ -419,13 +419,17 @@ fn handle(mut s: TcpStream, cfg: Arc<Config>, state: State) {
     let target = parts.next().unwrap_or("/").to_string();
 
     let mut len = 0usize;
+    let mut ua = String::new();
     loop {
         let mut h = String::new();
         if r.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
             break;
         }
-        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+        let lower = h.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length:") {
             len = v.trim().parse().unwrap_or(0);
+        } else if let Some(v) = lower.strip_prefix("user-agent:") {
+            ua = v.trim().to_string();
         }
     }
     // Drained rather than parsed: no route takes a body since the GitHub
@@ -437,6 +441,7 @@ fn handle(mut s: TcpStream, cfg: Arc<Config>, state: State) {
 
     let path = target.split('?').next().unwrap_or("/").to_string();
     let mac = mac_for_ip(&peer).unwrap_or_default();
+    if path == "/" { println!("  ua: {ua}"); }
     println!("{method} {path} from {peer} mac={} {}", 
         if mac.is_empty() { "?" } else { &mac },
         if mac.is_empty() { "" } else if is_registered(&mac).is_some() { "(registered)" } else { "(unregistered)" });
@@ -534,26 +539,28 @@ them a moment and you do not need to do anything else.</p>\
         }
     };
 
-    // Same window, code pre-filled. The captive-portal sheet frequently cannot
-    // open a new window, which stranded students on a page whose button did
-    // nothing; navigating in place works, and the background poller means
-    // leaving this page no longer abandons the registration.
-    let link = format!("{}?user_code={}", p.verify_url, urlenc(&p.user_code));
+    // Lead with "open this page in your own browser", because that is the one
+    // place everything lines up: the code, the button, and an existing Google
+    // session. The macOS captive sheet has no Google cookies, so it offers no
+    // account to pick and demands a full password entry into a WebView -- and
+    // it cannot open a new window, so a target=_blank link is inert there.
+    // Port 80 is redirected to this portal, so the bare address works.
     let html = format!(
         "<p class=lead>Sign in with your <b>USF</b> account to join the class \
-network. You only do this once on this laptop, and you can do it right here.</p>\
+network. Once per laptop, about thirty seconds.</p>\
 <span class=code>{}</span>\
 <a class=btn href='{}'>Sign in with Google</a>\
-<p class=muted>That opens Google in this window with the code already filled in. \
-If the button does nothing, open Safari or Chrome and go to \
-<b>www.google.com/device</b> &mdash; the <b>www.</b> matters &mdash; then enter \
-the code above. A phone works too, but you do not need one.</p>\
-<p class=muted>You can close this window once you have approved it. The network \
-lets you through on its own.</p>\
+<p class=muted><b>No account to choose from?</b> Then you are in the Wi-Fi \
+pop-up window, which has no Google session. Open <b>Safari</b> or <b>Chrome</b> \
+and go to<br><b>{}</b><br>&mdash; this same page, where you are already signed \
+in &mdash; and press the button there.</p>\
+<p class=muted>Note the code above first; you will need to type it at Google. \
+Leave this window open or close it, either is fine &mdash; the network lets you \
+through by itself once you approve.</p>\
 <script>setInterval(async()=>{{try{{const r=await fetch('/status');\
 const j=await r.json();if(j.state==='done'||j.state==='problem')location.reload();}}\
 catch(e){{}}}},{}000);</script>",
-        esc(&p.user_code), esc(&link), p.interval.max(3));
+        esc(&p.user_code), esc(&p.verify_url), esc(&cfg.listen), p.interval.max(3));
     respond(s, "200 OK", "text/html", &page("CS 326 sign-in", &html));
 }
 

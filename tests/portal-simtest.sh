@@ -56,13 +56,19 @@ for h in google.com mail.google.com chat.google.com drive.google.com; do
 	resolves "$h" && bad "$h MUST NOT resolve (garden too wide)" || ok "$h closed"
 done
 
-echo "== the captive-portal probe returns the portal, not Apple's Success =="
+echo "== the OS connectivity probe must NOT be intercepted =="
+# Intercepting it makes macOS flag the network captive, and macOS then refuses
+# to let the browser reach the sign-in host -- the pop-up appears and sign-in
+# cannot be completed from it. Set CAPTIVE_POPUP=1 to trade that back.
 body=$(gets http://captive.apple.com/hotspot-detect.html)
 case "$body" in
-	*"<TITLE>Success</TITLE>"*) bad "probe reached Apple - the sheet will not open" ;;
+	*"<TITLE>Success</TITLE>"*) ok "probe reaches Apple, so the OS sees a working network" ;;
 	"") bad "probe returned nothing" ;;
-	*) ok "probe intercepted by the portal" ;;
+	*) bad "probe intercepted -- macOS will block the browser from signing in" ;;
 esac
+gets http://$GW/ | grep -qi "sign-in" \
+	&& ok "the portal answers on port 80, so the address needs no port" \
+	|| bad "http://$GW/ does not serve the portal"
 case "$(gets http://$GW:8080/api/captive)" in
 	*'"captive":true'*) ok "RFC 8908 reports captive:true" ;;
 	*) bad "captive API wrong for an unregistered device" ;;
@@ -74,8 +80,8 @@ nft list set inet fw4 ${CLASS}_reg 2>/dev/null | grep -q "$MAC" && ok "MAC is in
 reach https://github.com/USF-CS326-F26 && ok "github now reachable" || bad "github still blocked after registering"
 reach https://accounts.google.com/     && bad "garden still open to a registered device" || ok "garden closed once registered"
 case "$(gets http://captive.apple.com/hotspot-detect.html)" in
-	*"<TITLE>Success</TITLE>"*) ok "probe now reaches Apple (no sheet)" ;;
-	*) bad "probe still intercepted after registering" ;;
+	*"<TITLE>Success</TITLE>"*) ok "probe still reaches Apple once registered" ;;
+	*) bad "probe intercepted after registering" ;;
 esac
 case "$(gets http://$GW:8080/api/captive)" in
 	*'"captive":false'*) ok "RFC 8908 reports captive:false" ;;
