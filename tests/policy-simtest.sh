@@ -60,7 +60,7 @@ resolves() { R nslookup "$1" $GW 2>/dev/null | sed -n '/^Name:/,$p' | grep -q '^
 gets()     { R wget -q -T "${2:-10}" -O /dev/null "$1" 2>/dev/null; }
 
 echo "== names that must resolve =="
-for d in github.com api.github.com usfca-cs-tools.github.io index.crates.io unpkg.com \
+for d in github.com api.github.com usf-cs326-f26.github.io index.crates.io unpkg.com \
          doc.rust-lang.org rust-exercises.com www.rust-exercises.com \
          rustlings.rust-lang.org play.rust-lang.org; do
 	resolves "$d" && ok "$d resolves" || bad "$d should resolve"
@@ -79,15 +79,14 @@ gets https://github.com/USF-CS326-F26                                && ok "gith
 # Distinguish "the router blocked it" from "the site itself is down". Without
 # this the suite reports a broken allowlist when the truth is a 404 on GitHub's
 # side, and the next hour goes into the wrong system.
-if gets https://usfca-cs-tools.github.io/USF-CS326-F26.github.io/; then
+if gets https://usf-cs326-f26.github.io/; then
 	ok "course website"
-elif wget -q -T10 -O /dev/null https://usfca-cs-tools.github.io/USF-CS326-F26.github.io/ 2>/dev/null; then
+elif wget -q -T10 -O /dev/null https://usf-cs326-f26.github.io/ 2>/dev/null; then
 	bad "course website blocked by the router (reachable from the router itself)"
 else
 	bad "course website is DOWN at the source -- not a router problem.
-        The repo has a CNAME for cs326-f26.cs.usfca.edu, which makes Pages serve
-        only on that name and 404 the github.io URL. That name does not resolve
-        yet, so the site is reachable at neither address."
+        It does not load from the router either, so check the site itself
+        before looking at the allowlist."
 fi
 gets https://index.crates.io/config.json                              && ok "crates.io index"      || bad "crates.io"
 gets https://static.rust-lang.org/dist/channel-rust-stable.toml       && ok "rustup channel"       || bad "rustup"

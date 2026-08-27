@@ -2,7 +2,8 @@
 # room. Replace these with yours.
 #
 # Each entry covers subdomains too, so example.com admits www.example.com.
-# If the site is on GitHub Pages, also put its edge IPs in static4.list so it
-# stays reachable for a browser using encrypted DNS the router cannot see.
-usfca-cs-tools.github.io
+# If the site is on GitHub Pages, its edge IPs are already in static4.list, so
+# it stays reachable even for a browser using encrypted DNS this router cannot
+# see. A site on your own domain needs no such pinning.
+usf-cs326-f26.github.io
 cs326-f26.cs.usfca.edu

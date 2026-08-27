@@ -14,10 +14,10 @@ reaches()  { curl -sS -m 8 -o /dev/null "$1"; }
 
 echo "== these must work =="
 ck "github.com resolves"                  yes resolves github.com
-ck "course site resolves"                 yes resolves usfca-cs-tools.github.io
+ck "course site resolves"                 yes resolves usf-cs326-f26.github.io
 ck "crates.io index resolves"             yes resolves index.crates.io
 ck "git ls-remote course repo"            yes git ls-remote https://github.com/USF-CS326-F26/oslings-course.git
-ck "course website loads"                 yes reaches https://usfca-cs-tools.github.io/USF-CS326-F26.github.io/
+ck "course website loads"                 yes reaches https://usf-cs326-f26.github.io/
 ck "reveal.js (slides render)"            yes reaches https://unpkg.com/reveal.js@5.0.4/dist/reveal.js
 ck "MathJax"                              yes reaches https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 ck "crates.io index reachable"            yes reaches https://index.crates.io/config.json
