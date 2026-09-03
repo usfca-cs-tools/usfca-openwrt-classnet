@@ -397,7 +397,7 @@ profiles on in `PROFILES`. `core`, `github` and `site` are always on.
 | `github` | git over https/ssh, the web UI, Copilot explicitly denied |
 | `site` | **your course website** — edit this one |
 | `rust` | crates.io, static.rust-lang.org, rustup |
-| `docs` | doc.rust-lang.org, the playground, rustlings |
+| `docs` | doc.rust-lang.org, the playground, rustlings, Comprehensive Rust |
 | `cdn` | unpkg, jsdelivr, cdnjs, Google Fonts |
 | `portal` | captive-portal probes, so laptops stop claiming "no Internet" |
 | `chat` | *off* — a class chat server |

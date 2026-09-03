@@ -10,10 +10,24 @@ doc.rust-lang.org          # std library docs, the Book, Rust by Example, Refere
 rust-exercises.com
 rustlings.rust-lang.org    # CNAME -> rust-lang.github.io (GitHub Pages)
 play.rust-lang.org         # the "Run" buttons in the Book / Rust by Example
+google.github.io           # Comprehensive Rust (mdBook on GitHub Pages)
 
 # play.rust-lang.org compiles same-origin (POST /execute), so the one hostname
 # is enough. Its only external assets are Google Fonts, which the `cdn`
 # profile already carries -- turning `cdn` off leaves it working but unstyled.
+
+# Comprehensive Rust is one hostname because mdBook bundles its own CSS, JS and
+# fonts, so every asset the book renders from is same-origin. Its "Run" buttons
+# POST to play.rust-lang.org, already above. What stays blocked is cosmetic or
+# unwanted: three img.shields.io badges on the landing page (broken-image icons,
+# nothing else), and googletagmanager / gstatic, which are analytics and the
+# cookie-consent bar.
+#
+# google.github.io admits Google's other GitHub Pages projects too -- the entry
+# matches the host and its subdomains, and per-path allowing is not something
+# DNS can express. That is the whole of the widening. Being GitHub Pages, its
+# edge IPs are already in static4.list, so the book survives a laptop on
+# encrypted DNS this router never sees.
 
 # Deliberately NOT included -- add with `classnet allow add <host> docs` if wanted:
 #   docs.rs             per-crate API documentation.

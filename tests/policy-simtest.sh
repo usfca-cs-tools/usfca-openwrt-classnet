@@ -62,7 +62,7 @@ gets()     { R wget -q -T "${2:-10}" -O /dev/null "$1" 2>/dev/null; }
 echo "== names that must resolve =="
 for d in github.com api.github.com usf-cs326-f26.github.io index.crates.io unpkg.com \
          doc.rust-lang.org rust-exercises.com www.rust-exercises.com \
-         rustlings.rust-lang.org play.rust-lang.org; do
+         rustlings.rust-lang.org play.rust-lang.org google.github.io; do
 	resolves "$d" && ok "$d resolves" || bad "$d should resolve"
 done
 
@@ -95,6 +95,7 @@ gets https://doc.rust-lang.org/std/                              20   && ok "std
 gets https://rust-exercises.com/                                 20   && ok "rust-exercises.com"   || bad "rust-exercises.com"
 gets https://rustlings.rust-lang.org/                            20   && ok "rustlings"           || bad "rustlings"
 gets https://play.rust-lang.org/                                 20   && ok "rust playground"     || bad "play.rust-lang.org"
+gets https://google.github.io/comprehensive-rust/                20   && ok "comprehensive-rust"  || bad "google.github.io"
 
 echo "== traffic that must be blocked =="
 gets https://1.1.1.1/            6 && bad "1.1.1.1 reachable"        || ok "raw IP 1.1.1.1 blocked"
