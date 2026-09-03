@@ -37,6 +37,8 @@ ck "api.githubcopilot.com (Copilot)"      no  resolves api.githubcopilot.com
 ck "copilot-proxy.githubusercontent.com"  no  resolves copilot-proxy.githubusercontent.com
 ck "class Zulip"                          no  resolves usfca-cs326-f26.zulipchat.com
 ck "raw.githubusercontent.com"            no  resolves raw.githubusercontent.com
+ck "users.rust-lang.org (forum)"          no  resolves users.rust-lang.org
+ck "internals.rust-lang.org (forum)"      no  resolves internals.rust-lang.org
 ck "google.com"                           no  resolves google.com
 ck "direct IP to 1.1.1.1"                 no  reaches https://1.1.1.1/
 

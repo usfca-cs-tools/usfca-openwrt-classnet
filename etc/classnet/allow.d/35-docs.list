@@ -38,10 +38,10 @@ asciinema.org              # the terminal recording embedded on the rustlings pa
 # is shut. dnsmasq matches a name and its subdomains and cannot be told "this
 # host only", so there is no apex-only entry to write.
 #
-# What that admits along with it: blog., forge., releases. (GitHub Pages),
-# foundation. (WordPress), and users. / internals. -- the two Discourse forums,
-# the only part of this worth a second thought. Name them in deny.list if a
-# forum is not something you want open during a session; deny wins.
+# What that admits along with it: blog., forge., releases. (GitHub Pages) and
+# foundation. (WordPress). The two Discourse forums it would also have admitted,
+# users. and internals., are named in deny.list, which is more specific than
+# this entry and so wins.
 #
 # It also makes the doc., play. and rustlings. entries above redundant. They
 # stay because they record WHY each host is needed -- the playground's POST,

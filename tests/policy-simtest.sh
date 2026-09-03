@@ -71,7 +71,8 @@ echo "== names that must NOT resolve =="
 for d in chatgpt.com api.anthropic.com api.githubcopilot.com \
          copilot-proxy.githubusercontent.com raw.githubusercontent.com \
          zulip.com usfca-cs326-f26.zulipchat.com static.zulipchat.com \
-         google.com codeload.github.com; do
+         google.com codeload.github.com \
+         users.rust-lang.org internals.rust-lang.org; do
 	resolves "$d" && bad "$d MUST NOT resolve" || ok "$d refused"
 done
 

@@ -16,3 +16,10 @@ copilot-telemetry-service.githubusercontent.com
 # Tarball/zip endpoint. Reachable only as a side effect of allowing
 # github.com; git clone/pull/push never touch it.
 codeload.github.com
+
+# The two Rust Discourse forums. Reachable only as a side effect of allowing
+# the rust-lang.org apex, which the docs profile has to do because
+# www.rust-lang.org redirects there and dnsmasq has no apex-only entry.
+# Nothing on the homepage, the Book or the playground needs them.
+users.rust-lang.org
+internals.rust-lang.org
