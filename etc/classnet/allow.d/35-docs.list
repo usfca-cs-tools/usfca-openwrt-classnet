@@ -12,6 +12,8 @@ rustlings.rust-lang.org    # CNAME -> rust-lang.github.io (GitHub Pages)
 play.rust-lang.org         # the "Run" buttons in the Book / Rust by Example
 google.github.io           # Comprehensive Rust (mdBook on GitHub Pages)
 docs.rs                    # per-crate API documentation
+rust-lang.org              # the Rust homepage -- see the note below, www. is NOT enough
+asciinema.org              # the terminal recording embedded on the rustlings page
 
 # play.rust-lang.org compiles same-origin (POST /execute), so the one hostname
 # is enough. Its only external assets are Google Fonts, which the `cdn`
@@ -29,6 +31,26 @@ docs.rs                    # per-crate API documentation
 # carries the docs for every published crate, which is the point -- a student
 # reading about a dependency should not have to guess from the source.
 #
+# rust-lang.org is the apex on purpose, and it is the one entry here that is
+# broader than the host it was asked for. www.rust-lang.org 301-redirects TO
+# the apex, so allowing only the www name lands a student on a redirect to a
+# name that does not resolve -- a page that half-loads rather than a door that
+# is shut. dnsmasq matches a name and its subdomains and cannot be told "this
+# host only", so there is no apex-only entry to write.
+#
+# What that admits along with it: blog., forge., releases. (GitHub Pages),
+# foundation. (WordPress), and users. / internals. -- the two Discourse forums,
+# the only part of this worth a second thought. Name them in deny.list if a
+# forum is not something you want open during a session; deny wins.
+#
+# It also makes the doc., play. and rustlings. entries above redundant. They
+# stay because they record WHY each host is needed -- the playground's POST,
+# the rustlings CNAME -- and they survive if this entry is ever narrowed.
+#
+# asciinema.org is one hostname: the embed script on the rustlings page derives
+# its API host from its own src, so the player, its CSS and the recording all
+# come from asciinema.org itself.
+#
 # google.github.io admits Google's other GitHub Pages projects too -- the entry
 # matches the host and its subdomains, and per-path allowing is not something
 # DNS can express. That is the whole of the widening. Being GitHub Pages, its
@@ -36,6 +58,4 @@ docs.rs                    # per-crate API documentation
 # encrypted DNS this router never sees.
 
 # Deliberately NOT included -- add with `classnet allow add <host> docs` if wanted:
-#   asciinema.org       the demo recording on the rustlings landing page.
-#   www.rust-lang.org   nav links out of both sites.
 #   plausible.io        analytics on rust-exercises.com; nothing renders from it.

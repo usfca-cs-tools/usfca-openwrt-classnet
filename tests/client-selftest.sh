@@ -27,6 +27,8 @@ ck "rustlings.rust-lang.org"              yes reaches https://rustlings.rust-lan
 ck "rust playground"                      yes reaches https://play.rust-lang.org/
 ck "Comprehensive Rust"                   yes reaches https://google.github.io/comprehensive-rust/
 ck "docs.rs (crate API docs)"             yes reaches https://docs.rs/serde/latest/serde/
+ck "rust-lang.org (via www)"              yes reaches https://www.rust-lang.org/
+ck "asciinema.org"                        yes reaches https://asciinema.org/
 
 echo "== these must be blocked =="
 ck "chatgpt.com"                          no  resolves chatgpt.com
