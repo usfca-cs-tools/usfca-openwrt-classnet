@@ -62,14 +62,14 @@ gets()     { R wget -q -T "${2:-10}" -O /dev/null "$1" 2>/dev/null; }
 echo "== names that must resolve =="
 for d in github.com api.github.com usf-cs326-f26.github.io index.crates.io unpkg.com \
          doc.rust-lang.org rust-exercises.com www.rust-exercises.com \
-         rustlings.rust-lang.org play.rust-lang.org google.github.io; do
+         rustlings.rust-lang.org play.rust-lang.org google.github.io docs.rs; do
 	resolves "$d" && ok "$d resolves" || bad "$d should resolve"
 done
 
 echo "== names that must NOT resolve =="
 for d in chatgpt.com api.anthropic.com api.githubcopilot.com \
          copilot-proxy.githubusercontent.com raw.githubusercontent.com \
-         docs.rs zulip.com usfca-cs326-f26.zulipchat.com static.zulipchat.com \
+         zulip.com usfca-cs326-f26.zulipchat.com static.zulipchat.com \
          google.com codeload.github.com; do
 	resolves "$d" && bad "$d MUST NOT resolve" || ok "$d refused"
 done
@@ -96,6 +96,7 @@ gets https://rust-exercises.com/                                 20   && ok "rus
 gets https://rustlings.rust-lang.org/                            20   && ok "rustlings"           || bad "rustlings"
 gets https://play.rust-lang.org/                                 20   && ok "rust playground"     || bad "play.rust-lang.org"
 gets https://google.github.io/comprehensive-rust/                20   && ok "comprehensive-rust"  || bad "google.github.io"
+gets https://docs.rs/serde/latest/serde/                         20   && ok "docs.rs crate docs"  || bad "docs.rs"
 
 echo "== traffic that must be blocked =="
 gets https://1.1.1.1/            6 && bad "1.1.1.1 reachable"        || ok "raw IP 1.1.1.1 blocked"

@@ -25,13 +25,14 @@ ck "std library docs"                     yes reaches https://doc.rust-lang.org/
 ck "rust-exercises.com"                   yes reaches https://rust-exercises.com/
 ck "rustlings.rust-lang.org"              yes reaches https://rustlings.rust-lang.org/
 ck "rust playground"                      yes reaches https://play.rust-lang.org/
+ck "Comprehensive Rust"                   yes reaches https://google.github.io/comprehensive-rust/
+ck "docs.rs (crate API docs)"             yes reaches https://docs.rs/serde/latest/serde/
 
 echo "== these must be blocked =="
 ck "chatgpt.com"                          no  resolves chatgpt.com
 ck "api.anthropic.com"                    no  resolves api.anthropic.com
 ck "api.githubcopilot.com (Copilot)"      no  resolves api.githubcopilot.com
 ck "copilot-proxy.githubusercontent.com"  no  resolves copilot-proxy.githubusercontent.com
-ck "docs.rs"                              no  resolves docs.rs
 ck "class Zulip"                          no  resolves usfca-cs326-f26.zulipchat.com
 ck "raw.githubusercontent.com"            no  resolves raw.githubusercontent.com
 ck "google.com"                           no  resolves google.com

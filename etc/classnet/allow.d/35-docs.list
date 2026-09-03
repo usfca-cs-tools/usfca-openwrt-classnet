@@ -11,6 +11,7 @@ rust-exercises.com
 rustlings.rust-lang.org    # CNAME -> rust-lang.github.io (GitHub Pages)
 play.rust-lang.org         # the "Run" buttons in the Book / Rust by Example
 google.github.io           # Comprehensive Rust (mdBook on GitHub Pages)
+docs.rs                    # per-crate API documentation
 
 # play.rust-lang.org compiles same-origin (POST /execute), so the one hostname
 # is enough. Its only external assets are Google Fonts, which the `cdn`
@@ -23,6 +24,11 @@ google.github.io           # Comprehensive Rust (mdBook on GitHub Pages)
 # nothing else), and googletagmanager / gstatic, which are analytics and the
 # cookie-consent bar.
 #
+# docs.rs is also one hostname: every asset a crate's documentation page needs
+# is served from docs.rs itself, and there is no static. sibling to name. It
+# carries the docs for every published crate, which is the point -- a student
+# reading about a dependency should not have to guess from the source.
+#
 # google.github.io admits Google's other GitHub Pages projects too -- the entry
 # matches the host and its subdomains, and per-path allowing is not something
 # DNS can express. That is the whole of the widening. Being GitHub Pages, its
@@ -30,7 +36,6 @@ google.github.io           # Comprehensive Rust (mdBook on GitHub Pages)
 # encrypted DNS this router never sees.
 
 # Deliberately NOT included -- add with `classnet allow add <host> docs` if wanted:
-#   docs.rs             per-crate API documentation.
 #   asciinema.org       the demo recording on the rustlings landing page.
 #   www.rust-lang.org   nav links out of both sites.
 #   plausible.io        analytics on rust-exercises.com; nothing renders from it.

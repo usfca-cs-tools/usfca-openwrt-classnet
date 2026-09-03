@@ -858,7 +858,7 @@ cmd_test() {
 	done
 	# These must stay out of every profile in allow.d, or this arm contradicts
 	# policy-simtest, which asserts the allowed side of the same policy.
-	for d in chatgpt.com api.githubcopilot.com api.anthropic.com docs.rs; do
+	for d in chatgpt.com api.githubcopilot.com api.anthropic.com; do
 		[ "$(_q "$d")" -eq 0 ] && echo "  ok   $d refused" || { echo "  FAIL $d should NOT resolve"; rc=1; }
 	done
 	[ $rc = 0 ] && echo "ALL PASS" || echo "FAILURES -- see above"
