@@ -54,7 +54,8 @@ case "$TO" in
   @present)    USERS=$(ssh "$HOST" 'classnet who --github' 2>/dev/null || true) ;;
   @registered|@all) USERS=$(ssh "$HOST" 'classnet roster --github' 2>/dev/null || true) ;;
   @group:*)    g="${TO#@group:}"
-               [ -f "$GROUPS" ] || die "no groups file at $GROUPS"
+               [ -f "$GROUPS" ] || die "no groups file at $GROUPS
+  (it is gitignored -- start from etc/classnet/groups.txt.example)"
                USERS=$(awk -F: -v g="$g" '$1==g{print $2}' "$GROUPS" | tr ' ' '\n' | grep -v '^$' || true)
                [ -n "$USERS" ] || die "group '$g' not found in $GROUPS" ;;
   *)           USERS=$(echo "$TO" | tr ',' '\n' | grep -v '^$') ;;

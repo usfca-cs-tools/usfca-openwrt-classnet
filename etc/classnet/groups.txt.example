@@ -1,0 +1,12 @@
+# Named groups for classnet-release --to @group:NAME
+#
+# Copy to groups.txt in this directory, which is gitignored: a filled-in file
+# names real students by GitHub username, and this repository is public.
+# bin/classnet-release reads the copy HERE, in your working tree -- not the
+# one on the router -- or $CS326_GROUPS if you set it.
+#
+# One per line:   name: githubuser1 githubuser2 ...
+#
+# Example:
+# makeup-thu: jsmith alopez
+# section-b:  rpatel kwong tnguyen

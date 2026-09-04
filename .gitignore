@@ -12,6 +12,10 @@ etc/classnet/registered.macs
 etc/classnet/attendance/
 etc/classnet/state-*
 
+# Also student data, but this one lives in the working tree rather than on the
+# router: bin/classnet-release reads it from here. Copy groups.txt.example.
+etc/classnet/groups.txt
+
 # Build output. The portal is architecture-specific -- build it for your own
 # router rather than shipping one binary that only suits ours.
 portal/target/
