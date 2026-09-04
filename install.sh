@@ -99,7 +99,6 @@ ssh "$HOST" 'set -e
   S=/tmp/classnet-stage/etc/classnet
   cp "$S"/allow.d/*.list /etc/classnet/allow.d/
   cp "$S"/deny.list "$S"/static4.list "$S"/garden.list /etc/classnet/
-  [ -f "$S/groups.txt" ] && [ ! -f /etc/classnet/groups.txt ] && cp "$S/groups.txt" /etc/classnet/
   # schedule.conf holds your class times and is gitignored like classnet.conf.
   # Without one, attendance has no sessions to report against.
   if [ -f "$S/schedule.conf" ]; then
