@@ -846,6 +846,35 @@ cmd_test() {
 			|| { echo "  FAIL portal not listening on $STAFF_IP:$PORTAL_PORT -- restart classnet-portal"; rc=1; }
 	fi
 
+	# $CLASS_IP only exists while the student SSID is up -- the schedule takes
+	# it down between sessions, and `classnet disable` removes it outright. Both
+	# arms below are worthless without it, and worthless in OPPOSITE directions:
+	# every "should resolve" fails for want of a listener, while every "should
+	# NOT resolve" passes vacuously, because a resolver that answers nothing
+	# refuses everything. Reporting either would be a lie about the allowlist,
+	# so say plainly that this half was not tested. Not a failure when the SSID
+	# is down on purpose -- but if nothing explains it being down, that IS one.
+	if ! ip -4 addr show 2>/dev/null | grep -qw "$CLASS_IP"; then
+		echo "== resolver behaviour: NOT TESTED =="
+		# Order matters: classnet-schedule brings the SSID down by calling
+		# `classnet disable`, so FLAG_OFF is set in BOTH cases. Testing it
+		# first would blame the instructor for the timetable's work, and
+		# advise `classnet enable` -- which the next schedule tick undoes.
+		if [ -f "$FLAG_SCHED" ]; then
+			why="the schedule is on and no session is open -- classnet schedule"
+		elif [ -f "$FLAG_OFF" ]; then
+			why="the SSID is disabled by hand -- classnet enable"
+		else
+			why="nothing explains it being down -- see classnet status"
+			rc=1
+		fi
+		echo "  skip $CLASS_IP is not up: $why"
+		echo "  (run this again during a session to test the allowlist)"
+		[ $rc = 0 ] && echo "ALL PASS (resolver half not tested)" \
+		            || echo "FAILURES -- see above"
+		return $rc
+	fi
+
 	echo "== resolver behaviour (asking $CLASS_IP directly) =="
 	_q()  { nslookup "$1" "$CLASS_IP" 2>/dev/null | sed -n '/^Name:/,$p' | grep -c '^Address'; }
 	# Read the course site out of the profile that defines it rather than
