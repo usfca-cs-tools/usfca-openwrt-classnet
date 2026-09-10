@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""roster-drift -- report where the two rosters disagree about the same class.
+
+There are two rosters, kept by hand, and nothing has ever compared them:
+
+  classnet  /etc/classnet/roster.csv          USF identity -> GitHub username
+            on the router. Decides who gets past the sign-in portal.
+  oslings   [grading] roster in .oslings/     Email -> GitHub username
+            on your machine. Decides who `oslings class init` builds a repo for.
+
+A student added to one and not the other is invisible until it bites: no repo
+on day one, or turned away at the portal with a repo already waiting. A student
+*removed* from one and not the other is worse, because nothing fails -- they
+simply keep an access nobody meant them to have. That is not hypothetical: a
+student who dropped was taken off the classnet roster the same day and left on
+the oslings one, and so kept read on the course repo for another ten days.
+
+The Canvas class list is the arbiter, so this reports drift for the people who
+are actually enrolled and treats everyone else separately.
+
+  ./bin/roster-drift                                 # router + configured paths
+  ./bin/roster-drift --staff ta-username             # TAs are not enrolled
+  ./bin/roster-drift --classnet etc/classnet/roster.csv --enrolled etc/classnet/enrolled.csv
+
+Exit status is 0 when the rosters agree and 1 when they do not, so it can gate
+a pre-session check.
+
+The three parsers below mirror `roster_rows`, `enrolled_rows` and `csv_fields`
+in portal/src/main.rs field for field. That is deliberate: a checker that reads
+these files differently than the portal does reports drift that is not there,
+and misses drift that is.
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+
+STUDENT_DOMAIN = "dons.usfca.edu"
+
+
+# ---- parsers (portal/src/main.rs) -----------------------------------------
+
+def csv_fields(line):
+    """Split on unquoted commas. Canvas writes `"Ferrufino, Ronnie",...`, so a
+    plain split(',') shifts every later column by one and silently reads the
+    wrong field as the login."""
+    out, cur, quoted = [], [], False
+    for c in line:
+        if c == '"':
+            quoted = not quoted
+        elif c == "," and not quoted:
+            out.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(c)
+    out.append("".join(cur).strip())
+    return out
+
+
+def roster_rows(txt):
+    """Every (usf, github) pair. Header columns are found by name when a header
+    is present, otherwise first column is USF and last is GitHub."""
+    rows, usf_col, gh_col, first = [], 0, None, True
+    for line in txt.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        f = csv_fields(line)
+        if len(f) < 2:
+            continue
+        if first:
+            first = False
+            lower = [x.lower() for x in f]
+            if any("github" in h for h in lower):
+                for i, h in enumerate(lower):
+                    if "github" in h:
+                        gh_col = i
+                    elif "email" in h or "user" in h or "usf" in h:
+                        usf_col = i
+                continue  # header consumed, not a data row
+        gh_idx = len(f) - 1 if gh_col is None else gh_col
+        if usf_col >= len(f) or gh_idx >= len(f):
+            continue
+        who, gh = f[usf_col].strip(), f[gh_idx].strip()
+        if not who or not gh:
+            continue
+        rows.append((who, gh))
+    return rows
+
+
+def enrolled_rows(txt):
+    """The class list as (id, display name). A Canvas gradebook export works
+    unchanged, including the "Points Possible" row it puts second."""
+    rows, id_col, name_col, first = [], 0, None, True
+    for line in txt.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        f = csv_fields(line)
+        if first:
+            first = False
+            lower = [x.lower() for x in f]
+            if any(("login" in h or "email" in h or "student" in h or "user" in h)
+                   for h in lower):
+                for i, h in enumerate(lower):
+                    # "SIS Login ID" is the useful one in a Canvas export;
+                    # prefer it over the display name in "Student".
+                    if "login" in h or "email" in h or "sis user" in h:
+                        id_col = i
+                    elif "student" in h or "name" in h:
+                        name_col = i
+                continue
+        if id_col >= len(f):
+            continue
+        ident = f[id_col].strip()
+        if not ident or ident.lower() == "points possible":
+            continue
+        name = f[name_col].strip() if name_col is not None and name_col < len(f) else ""
+        rows.append((ident, name))
+    return rows
+
+
+def key(ident):
+    """Two identifiers naming the same person. Compares local parts, so a class
+    list holding `benson` matches a roster holding `benson@usfca.edu`."""
+    return ident.split("@")[0].strip().lower()
+
+
+def domain(ident):
+    return ident.split("@")[1].strip().lower() if "@" in ident else ""
+
+
+# ---- inputs ----------------------------------------------------------------
+
+def read_source(path, host, remote):
+    """A local path if given, otherwise the router's copy. OpenWrt has no
+    sftp-server, so this pipes `cat` rather than using scp."""
+    if path:
+        with open(os.path.expanduser(path)) as fh:
+            return fh.read(), path
+    out = subprocess.run(["ssh", host, "cat " + remote],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        sys.exit("roster-drift: cannot read %s from %s: %s"
+                 % (remote, host, out.stderr.strip() or "ssh failed"))
+    return out.stdout, "%s:%s" % (host, remote)
+
+
+def oslings_roster_path(explicit):
+    """`[grading] roster` from .oslings/config.toml, so this stays pointed at
+    whatever `class init` actually reads."""
+    if explicit:
+        return os.path.expanduser(explicit)
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # cwd first, then this repo, then its siblings -- the course repo that owns
+    # .oslings/ is checked out next to this one, not inside it.
+    bases = [os.getcwd(), root]
+    parent = os.path.dirname(root)
+    bases += sorted(os.path.join(parent, d) for d in os.listdir(parent)
+                    if os.path.isdir(os.path.join(parent, d)))
+    for base in bases:
+        cfg = os.path.join(base, ".oslings", "config.toml")
+        if os.path.exists(cfg):
+            with open(cfg) as fh:
+                m = re.search(r'^\s*roster\s*=\s*"([^"]+)"', fh.read(), re.M)
+            if m:
+                return os.path.expanduser(m.group(1))
+    sys.exit("roster-drift: no --oslings path and no .oslings/config.toml found.\n"
+             "  Pass --oslings /path/to/roster.csv, or run from the course repo.")
+
+
+# ---- report ----------------------------------------------------------------
+
+def main():
+    p = argparse.ArgumentParser(add_help=True, description=__doc__.splitlines()[0])
+    p.add_argument("--host", default="cs326", help="router ssh host (default: cs326)")
+    p.add_argument("--classnet", help="read the classnet roster from a local file")
+    p.add_argument("--enrolled", help="read the class list from a local file")
+    p.add_argument("--oslings", help="the oslings roster CSV")
+    p.add_argument("--staff", default="",
+                   help="comma-separated identities that are staff, not students")
+    args = p.parse_args()
+
+    cn_txt, cn_where = read_source(args.classnet, args.host, "/etc/classnet/roster.csv")
+    en_txt, en_where = read_source(args.enrolled, args.host, "/etc/classnet/enrolled.csv")
+    os_path = oslings_roster_path(args.oslings)
+    with open(os_path) as fh:
+        os_txt = fh.read()
+
+    classnet = {key(w): (w, g) for w, g in roster_rows(cn_txt)}
+    oslings = {key(w): (w, g) for w, g in roster_rows(os_txt)}
+    enrolled = enrolled_rows(en_txt)
+
+    # A GitHub username is the other way to recognise the same person, and the
+    # only way when the two files are keyed differently -- one student signed
+    # the form with a personal gmail address.
+    by_gh = {}
+    for k, (w, g) in oslings.items():
+        by_gh.setdefault(g.lower(), k)
+
+    staff = {key(s) for s in args.staff.split(",") if s.strip()}
+
+    print("classnet  %s  (%d rows)" % (cn_where, len(classnet)))
+    print("oslings   %s  (%d rows)" % (os_path, len(oslings)))
+    print("enrolled  %s  (%d students)\n" % (en_where, len(enrolled)))
+
+    drift = []
+    notes = []
+    matched_os = set()
+
+    for ident, name in enrolled:
+        k = key(ident)
+        cn = classnet.get(k)
+        osl = oslings.get(k)
+        # Keyed differently but the same GitHub account: still the same person.
+        note = ""
+        if osl is None and cn is not None and cn[1].lower() in by_gh:
+            alt = by_gh[cn[1].lower()]
+            osl = oslings[alt]
+            note = "  (oslings keys them as %s)" % osl[0]
+            k = alt
+        if osl is not None:
+            matched_os.add(k)
+
+        label = "  %s" % name if name else ""
+        if cn is None and osl is None:
+            drift.append(("NO GITHUB", ident, "in neither roster -- no network, no repo" + label))
+        elif osl is None:
+            drift.append(("NO REPO", ident, "classnet only -- `class init` builds nothing" + label))
+        elif cn is None:
+            drift.append(("NO NETWORK", ident, "oslings only -- turned away at the portal" + label))
+        elif cn[1].lower() != osl[1].lower():
+            drift.append(("MISMATCH", ident,
+                          "classnet says %s, oslings says %s" % (cn[1], osl[1])))
+        elif note:
+            notes.append(("keyed", ident, "same GitHub user%s" % note))
+
+    # Anyone in a roster who is not on the class list. Staff live here on
+    # purpose; a dropped student left in one roster is the case that matters.
+    enrolled_keys = {key(i) for i, _ in enrolled}
+    extra = []
+    for k in sorted(set(classnet) | set(oslings)):
+        if k in enrolled_keys or k in matched_os:
+            continue
+        where = [n for n, d in (("classnet", classnet), ("oslings", oslings)) if k in d]
+        who = (classnet.get(k) or oslings.get(k))[0]
+        is_staff = k in staff or (domain(who) not in ("", STUDENT_DOMAIN))
+        extra.append((who, where, is_staff))
+
+    if drift:
+        print("Drift among the %d enrolled\n" % len(enrolled))
+        for tag, ident, why in drift:
+            print("  %-12s%-32s %s" % (tag, ident, why))
+        print()
+
+    if notes:
+        for tag, ident, why in notes:
+            print("  %-12s%-32s %s" % (tag, ident, why))
+        print()
+
+    if extra:
+        print("In a roster but not enrolled\n")
+        for who, where, is_staff in extra:
+            tag = "staff" if is_staff else "DROPPED?"
+            print("  %-12s%-32s %s" % (tag, who, " + ".join(where)))
+        print()
+
+    stale = [e for e in extra if not e[2]]
+    if not drift and not stale:
+        print("The two rosters agree on all %d enrolled students." % len(enrolled))
+        return 0
+
+    if stale:
+        print("%d row(s) above are for people who are not enrolled and not known "
+              "staff." % len(stale))
+        print("If they dropped, remove them from BOTH rosters -- and revoke any "
+              "GitHub access\nthey still hold, which removing a roster row does "
+              "not do.")
+    if drift:
+        print("%d enrolled student(s) drift." % len(drift))
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

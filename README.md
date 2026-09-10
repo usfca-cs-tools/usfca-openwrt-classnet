@@ -505,6 +505,44 @@ ones who would otherwise be turned away with no warning.
 
 Pipe rather than `scp`: OpenWrt has no sftp-server.
 
+### Two rosters, one class
+
+If your courseware keeps its own roster — the list that decides who gets a
+student repository — then you have two files naming the same class, kept by
+hand, and nothing compares them. Adding a student to one and not the other is
+visible on day one. *Removing* a student from one and not the other is not:
+nothing fails, and they quietly keep an access nobody meant them to have.
+
+```sh
+./bin/roster-drift --staff ta-username
+```
+
+It reads the classnet roster and the class list from the router, finds the
+other roster through `[grading] roster` in the course repo's `.oslings/`
+config, and reports only where they disagree about someone **enrolled**:
+
+```
+Drift among the 30 enrolled
+
+  NO REPO     jsmith            classnet only -- `class init` builds nothing
+  NO NETWORK  alopez            oslings only -- turned away at the portal
+  MISMATCH    rpatel            classnet says rpatel-typo, oslings says rpatel
+
+In a roster but not enrolled
+
+  staff       you@example.edu   classnet
+  DROPPED?    kwong@example.edu oslings
+```
+
+Exit status is 0 when they agree and 1 when they do not, so it can gate a
+pre-session check. Staff are recognised by their address — anyone outside the
+student domain — with `--staff` for the ones inside it, such as TAs.
+
+The three CSV parsers mirror `portal/src/main.rs` field for field, so a roster
+that reads clean here reads the same way at the door. `--classnet`,
+`--enrolled` and `--oslings` all take local paths, which is how you check a
+change before pushing it to the router.
+
 ## Testing
 
 ```sh
@@ -564,6 +602,7 @@ usr/sbin/classnet-schedule     opens and closes the SSID on the timetable, per m
 etc/hotplug.d/ntp/25-classnet  holds the schedule until ntpd confirms the clock
 portal/                        the sign-in portal (Rust, no dependencies)
 bin/classnet-release           push a git release into selected students' repos
+bin/roster-drift               compare this roster against the course-repo roster
 tests/                         two end-to-end suites
 ```
 
