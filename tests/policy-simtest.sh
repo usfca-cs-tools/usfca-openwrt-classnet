@@ -33,6 +33,20 @@ command -v ip >/dev/null && ip netns list >/dev/null 2>&1 || {
 	echo "needs ip-full: apk add ip-full kmod-veth"; exit 1; }
 modprobe veth 2>/dev/null
 
+# Both bridges have to exist before anything is attached to them. The student
+# bridge exists only while its SSID is up: OpenWrt does not create a bridge with
+# no ports, so outside a scheduled period, or after `classnet disable`, there is
+# no br-$CLASS. Carrying on without it leaves the simulated laptop on no network
+# at all, where every "must NOT resolve" check passes for the wrong reason -- a
+# laptop that can reach nothing resolves nothing -- and the summary reads as a
+# working blocklist.
+for br in br-$CLASS br-${CLASS}s; do
+	ip link show "$br" >/dev/null 2>&1 || {
+		echo "$br does not exist -- is its SSID up? Check: classnet status"
+		echo "Under a schedule the student SSID, and its bridge, is down outside class periods."
+		exit 1; }
+done
+
 cleanup
 ip netns add $NS
 ip link add $VETH type veth peer name $PEER address 02:c5:32:60:00:01 || { echo "veth unavailable: apk add kmod-veth"; exit 1; }
@@ -77,10 +91,18 @@ for d in chatgpt.com api.anthropic.com api.githubcopilot.com \
 done
 
 echo "== traffic that must flow =="
-gets https://github.com/USF-CS326-F26                                && ok "github.com over https" || bad "github.com"
 # Distinguish "the router blocked it" from "the site itself is down". Without
 # this the suite reports a broken allowlist when the truth is a 404 on GitHub's
-# side, and the next hour goes into the wrong system.
+# side, and the next hour goes into the wrong system. The router's own fetch is
+# not subject to the student policy, so it is the control for both checks.
+if gets https://github.com/USF-CS326-F26; then
+	ok "github.com over https"
+elif wget -q -T10 -O /dev/null https://github.com/USF-CS326-F26 2>/dev/null; then
+	bad "github.com blocked by the router (reachable from the router itself)"
+else
+	bad "github.com did not load from the router either -- GitHub refused or
+        failed the fetch, not a router problem."
+fi
 if gets https://usf-cs326-f26.github.io/; then
 	ok "course website"
 elif wget -q -T10 -O /dev/null https://usf-cs326-f26.github.io/ 2>/dev/null; then
