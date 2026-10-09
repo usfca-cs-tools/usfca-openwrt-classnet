@@ -142,7 +142,7 @@ ssh "$HOST" 'set -e
   rm -rf /tmp/classnet-stage'
 
 say "Cron"
-# Both of these are one-minute jobs and neither was ever installed here, so a
+# These are one-minute jobs and the first two were never installed here, so a
 # fresh router sampled no attendance at all until someone added the line by
 # hand. Idempotent: re-running must not accumulate duplicates.
 ssh "$HOST" 'set -e
@@ -151,9 +151,13 @@ ssh "$HOST" 'set -e
   for j in classnet-presence classnet-schedule; do
     grep -qF "/usr/sbin/$j" "$C" || echo "* * * * * /usr/sbin/$j" >> "$C"
   done
+  # The give-up rule for a Wi-Fi uplink. Always installed: it exits at once
+  # while the uplink is the wired port, and a rule that had to be remembered
+  # at the moment someone switches to Wi-Fi is one that would not be there.
+  grep -qF "/usr/sbin/classnet net check" "$C" || echo "* * * * * /usr/sbin/classnet net check" >> "$C"
   /etc/init.d/cron enable >/dev/null 2>&1 || true
   /etc/init.d/cron restart >/dev/null 2>&1 || true
-  echo "  $(grep -c "/usr/sbin/classnet-" "$C") classnet cron entries, cron $(/etc/init.d/cron status 2>&1 | head -1)"'
+  echo "  $(grep -c "/usr/sbin/classnet" "$C") classnet cron entries, cron $(/etc/init.d/cron status 2>&1 | head -1)"'
 
 say "Clock"
 # The schedule reads the wall clock and the board has no RTC, so classnet-schedule

@@ -21,6 +21,14 @@ FLAG_OPEN="$CONF_DIR/state-unlocked"
 FLAG_DBG="$CONF_DIR/state-debug"
 FLAG_GATE="$CONF_DIR/state-gate-on"
 FLAG_SCHED="$CONF_DIR/state-schedule-on"
+# The Wi-Fi uplink is operator state too, but it carries values, one of them
+# somebody else's passphrase. Four plain lines -- ssid, key, radio, encryption --
+# read back a line at a time and never sourced, so nothing in an SSID or a
+# password is ever evaluated. Absent means the wired WAN port.
+UPLINK="$CONF_DIR/state-uplink"
+UPLINK_PREV=/tmp/classnet-uplink.prev
+UPLINK_MISS=/tmp/classnet-uplink-miss
+UPLINK_NOTE=/tmp/classnet-uplink-dropped
 GARDEN="$CONF_DIR/garden.list"
 PROBES="$CONF_DIR/probe.list"
 REGTSV="$CONF_DIR/registrations.tsv"
@@ -56,9 +64,11 @@ C="$CLASS"
 # operator switching the who-is-online page off, not an omission to fill in.
 : "${ONLINE_HOST=online.$CLASS}"
 : "${STAFF_HIDDEN:=0}" "${ALLOW_TCP:=22 80 443}" "${ALLOW_UDP:=443}"
+: "${UPLINK_GIVEUP_MIN:=5}"
 
 CLASS_IP="$NET.1"
 STAFF_IP="$STAFF_NET.1"
+WWAN="${C}wwan"
 
 # ---------------------------------------------------------------- helpers ---
 
@@ -73,6 +83,9 @@ is_debug()   { [ -f "$FLAG_DBG" ]; }
 # The registration gate is opt-in: turning it on mid-session would cut off
 # every already-connected laptop at once, so it must be a deliberate act.
 gate_on()    { [ -f "$FLAG_GATE" ]; }
+uplink_wifi(){ [ -s "$UPLINK" ]; }
+# 1 ssid, 2 key, 3 radio, 4 encryption
+uplink_get() { sed -n "${1}p" "$UPLINK" 2>/dev/null; }
 
 garden_domains(){ [ -f "$GARDEN" ] && strip "$GARDEN" | awk '!s[$0]++'; }
 probe_domains() { [ -f "$PROBES" ] && strip "$PROBES" | awk '!s[$0]++'; }
@@ -128,6 +141,16 @@ apply_network() {
 	uci set network.${C}staff.ipaddr="$STAFF_IP"
 	uci set network.${C}staff.netmask='255.255.255.0'
 	uci set network.${C}staff.ip6assign='60'
+
+	# The Wi-Fi uplink, when there is one. The metric is what lets it sit beside
+	# the stock wan without touching it: wan has none, which is 0, so a cable in
+	# the WAN port still wins, and with nothing plugged in this is the only
+	# default route there is.
+	if uplink_wifi; then
+		uci set network.${WWAN}=interface
+		uci set network.${WWAN}.proto='dhcp'
+		uci set network.${WWAN}.metric='20'
+	fi
 }
 
 apply_wireless() {
@@ -147,6 +170,21 @@ apply_wireless() {
 	_ap ${C}_5g  radio1 "$SSID" "$KEY" "$C"        0 "$off"
 	_ap ${C}s_2g radio0 "$STAFF_SSID" "$STAFF_KEY" ${C}staff "$STAFF_HIDDEN" 0
 	_ap ${C}s_5g radio1 "$STAFF_SSID" "$STAFF_KEY" ${C}staff "$STAFF_HIDDEN" 0
+
+	# The uplink client shares a radio with the APs above, and that radio has
+	# one channel. hostapd stops every AP on it while the client is not
+	# associated and restarts them on the client's channel once it is. That is
+	# why the client goes on ONE radio: the other band never depends on someone
+	# else's network, and is the way back in when this one is dark.
+	if uplink_wifi && uci -q get "wireless.$(uplink_get 3)" >/dev/null; then
+		uci set wireless.${C}_sta=wifi-iface
+		uci set "wireless.${C}_sta.device=$(uplink_get 3)"
+		uci set wireless.${C}_sta.mode='sta'
+		uci set wireless.${C}_sta.network="$WWAN"
+		uci set "wireless.${C}_sta.ssid=$(uplink_get 1)"
+		uci set "wireless.${C}_sta.encryption=$(uplink_get 4)"
+		uci set "wireless.${C}_sta.key=$(uplink_get 2)"
+	fi
 }
 
 _ap() {
@@ -590,6 +628,31 @@ apply_firewall() {
 	staff_macs | while read -r m; do
 		uci add_list "firewall.${C}_dnat53.src_mac=!$m"
 	done
+
+	# The Wi-Fi uplink joins the STOCK wan zone rather than getting one of its
+	# own: every rule above already says dest=wan, and that zone is where the
+	# masquerading lives. Edited only when the answer changes, so an apply on a
+	# wired uplink leaves a section this tool does not own exactly as it was.
+	u_zone=$(wan_zone); u_in=0
+	[ -n "$u_zone" ] && uci -q get "firewall.$u_zone.network" | tr ' ' '\n' | grep -qx "$WWAN" && u_in=1
+	if uplink_wifi; then
+		if [ -z "$u_zone" ]; then
+			uci revert network; uci revert wireless; uci revert dhcp; uci revert firewall
+			die "no firewall zone named 'wan' to put the Wi-Fi uplink in -- nothing applied"
+		fi
+		[ $u_in = 1 ] || uci add_list "firewall.$u_zone.network=$WWAN"
+	elif [ $u_in = 1 ]; then
+		uci del_list "firewall.$u_zone.network=$WWAN"
+	fi
+}
+
+# The stock zone the uplink joins, as a UCI section. Looked up by name and then
+# checked for type, because a rule may be called 'wan' as well.
+wan_zone() {
+	uci show firewall 2>/dev/null | sed -n "s/^firewall\.\([^.=]*\)\.name='wan'$/\1/p" \
+		| while read -r s; do
+			[ "$(uci -q get "firewall.$s")" = zone ] && { echo "$s"; break; }
+		done
 }
 
 _svc() {
@@ -707,6 +770,8 @@ cmd_status() {
 	else
 		echo "Schedule      : off ($SSID stays up until classnet enable|disable)"
 	fi
+	echo "Uplink        : $(uplink_line)"
+	[ -f "$UPLINK_NOTE" ] && echo "                $(cat "$UPLINK_NOTE")"
 	echo "Profiles      : $ALWAYS_ON $PROFILES"
 	echo "Allowed names : $(domains | wc -l | tr -d ' ')"
 	echo "Denied names  : $(denied | wc -l | tr -d ' ')"
@@ -844,6 +909,16 @@ cmd_test() {
 		netstat -ltn 2>/dev/null | grep -q "$STAFF_IP:$PORTAL_PORT" \
 			&& echo "  ok   portal listening for staff on $STAFF_IP:$PORTAL_PORT" \
 			|| { echo "  FAIL portal not listening on $STAFF_IP:$PORTAL_PORT -- restart classnet-portal"; rc=1; }
+	fi
+	# Only a Wi-Fi uplink is checked. A wired one is the stock wan, which this
+	# tool neither owns nor configures.
+	if uplink_wifi; then
+		uplink_up \
+			&& echo "  ok   Wi-Fi uplink '$(uplink_get 1)' is connected" \
+			|| { echo "  FAIL Wi-Fi uplink '$(uplink_get 1)' is not connected -- see classnet net"; rc=1; }
+		uci -q get "firewall.$(wan_zone).network" | tr ' ' '\n' | grep -qx "$WWAN" \
+			&& echo "  ok   Wi-Fi uplink is in the wan zone" \
+			|| { echo "  FAIL Wi-Fi uplink is not in the wan zone -- run classnet apply"; rc=1; }
 	fi
 
 	# $CLASS_IP only exists while the student SSID is up -- the schedule takes
@@ -1291,6 +1366,321 @@ cmd_gate() {
 	esac
 }
 
+# ---------------------------------------------------------------- uplink ----
+
+# netifd's view of the uplink, one field at a time. Asked over ubus directly
+# rather than through /lib/functions/network.sh: that library reads variables
+# it never set, and this script runs under `set -u`.
+uplink_st() { ubus call "network.interface.$WWAN" status 2>/dev/null | jsonfilter -e "$1" 2>/dev/null; }
+# Up means associated AND holding a lease: netifd does not call a DHCP
+# interface up until it has an address.
+uplink_up() { case "$(uplink_st '@.up')" in true|1) return 0 ;; esac; return 1; }
+
+band_of() {
+	case "$(uci -q get "wireless.$1.band")" in
+	2g) echo "2.4 GHz" ;; 5g) echo "5 GHz" ;; 6g) echo "6 GHz" ;; *) echo "$1" ;;
+	esac
+}
+
+# The interfaces netifd has up on a radio. A scan has to go through one of
+# them: this iwinfo takes an interface, not a radio.
+radio_ifs() {
+	ubus call network.wireless status 2>/dev/null \
+		| jsonfilter -e "@.$1.interfaces[*].ifname" 2>/dev/null
+}
+
+# the uplink client's own interface, once netifd has created it
+uplink_sta() {
+	ubus call network.wireless status 2>/dev/null \
+		| jsonfilter -e "@.$(uplink_get 3).interfaces[@.section='${C}_sta'].ifname" 2>/dev/null | head -1
+}
+
+# The interface traffic actually leaves by, whatever is configured. Not the
+# same question as "which uplink is set": a cable in the WAN port outranks the
+# Wi-Fi uplink, and either one may simply be down.
+live_dev() {
+	ip -4 route get "${UPSTREAM_DNS%% *}" 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1
+}
+
+uplink_line() {
+	if ! uplink_wifi; then echo "ethernet (the wired WAN port)"; return; fi
+	if uplink_up; then
+		u_ch=$(iw dev "$(uplink_sta)" info 2>/dev/null | sed -n 's/.*channel \([0-9]*\) .*/\1/p' | head -1)
+		echo "Wi-Fi '$(uplink_get 1)' on $(band_of "$(uplink_get 3)")${u_ch:+ channel $u_ch}, address $(uplink_st '@["ipv4-address"][0].address')"
+	else
+		echo "Wi-Fi '$(uplink_get 1)' on $(band_of "$(uplink_get 3)") -- NOT CONNECTED"
+	fi
+}
+
+# <radio> <ssid> -> "signal channel encryption" for the strongest AP with that
+# name, or nothing. The name is handed to awk through the environment: -v
+# would read backslash escapes into it.
+uplink_scan() {
+	for u_if in $(radio_ifs "$1"); do
+		# Judged by content, not exit status: this iwinfo exits 0 even when it
+		# could not scan at all. No cells means try the radio's next interface.
+		u_out=$(iwinfo "$u_if" scan 2>/dev/null)
+		printf '%s\n' "$u_out" | grep -q '^Cell ' || continue
+		printf '%s\n' "$u_out" | WANT="\"$2\"" awk '
+			function keep() {
+				if (essid == ENVIRON["WANT"] && ch != "" && (!found || sig + 0 > bsig + 0)) {
+					found = 1; bsig = sig; bch = ch; benc = enc
+				}
+			}
+			/^Cell [0-9]+ - Address:/ { keep(); essid = ""; ch = ""; sig = ""; enc = ""; next }
+			/^[ \t]*ESSID: /      { sub(/^[ \t]*ESSID: /, ""); essid = $0; next }
+			/^[ \t]*Mode: /       { for (i = 1; i < NF; i++) if ($i == "Channel:") ch = $(i + 1); next }
+			/^[ \t]*Signal: /     { sig = $2; next }
+			/^[ \t]*Encryption: / { sub(/^[ \t]*Encryption: /, ""); enc = $0; next }
+			END { keep(); if (found) print bsig, bch, benc }'
+		return
+	done
+}
+
+# <ssid> -> "rank radio channel encryption" for the radio to put the client
+# on, lowest rank best. 5 GHz first, for the capacity -- but not on a radar
+# channel while 2.4 GHz offers the same network: an AP that follows its client
+# onto one has to listen for radar before it may transmit again.
+uplink_find() {
+	for r in 0 1; do
+		uci -q get "wireless.radio$r" >/dev/null || continue
+		u_cell=$(uplink_scan "radio$r" "$1")
+		[ -n "$u_cell" ] || continue
+		u_c=$(echo "$u_cell" | cut -d' ' -f2)
+		if   [ "$u_c" -le 14 ]; then u_rank=2
+		elif [ "$u_c" -ge 52 ] && [ "$u_c" -le 144 ]; then u_rank=3
+		else u_rank=1
+		fi
+		echo "$u_rank radio$r $(echo "$u_cell" | cut -d' ' -f2-)"
+	done | sort -n | head -1
+}
+
+# Do two IPv4 networks share any address? Compared at the shorter prefix.
+overlaps() {
+	awk -v a="$1" -v am="$2" -v b="$3" -v bm="$4" 'BEGIN {
+		m = (am + 0 < bm + 0) ? am + 0 : bm + 0
+		split(a, x, "."); split(b, y, ".")
+		ai = ((x[1] * 256 + x[2]) * 256 + x[3]) * 256 + x[4]
+		bi = ((y[1] * 256 + y[2]) * 256 + y[3]) * 256 + y[4]
+		d = 2 ^ (32 - m)
+		exit !(int(ai / d) == int(bi / d))
+	}'
+}
+
+uplink_restore() {
+	if [ -f "$UPLINK_PREV" ]; then mv "$UPLINK_PREV" "$UPLINK"; else rm -f "$UPLINK"; fi
+}
+
+# A switch that did not work is undone, not left for someone to notice: the
+# band the client sits on has no APs for as long as it keeps trying.
+uplink_undo() {
+	uplink_restore
+	( cmd_apply >/dev/null 2>&1 )
+	logger -t classnet "uplink: $1 -- put back as it was"
+	die "$1. Uplink put back as it was."
+}
+
+cmd_net() {
+	case "$UPLINK_GIVEUP_MIN" in
+		''|*[!0-9]*) die "UPLINK_GIVEUP_MIN in $CONF must be a whole number of minutes (0 = never give up)" ;;
+	esac
+	case "${1:-}" in
+	wifi)
+		{ [ $# -eq 3 ] && [ -n "$2" ] && [ -n "$3" ]; } \
+			|| die "usage: classnet net wifi <ssid> <password>   (quote either one if it has spaces)"
+		u_ssid="$2"; u_key="$3"
+		[ ${#u_ssid} -le 32 ] || die "an SSID is at most 32 characters"
+		{ [ ${#u_key} -ge 8 ] && [ ${#u_key} -le 63 ]; } || die "a Wi-Fi password is 8 to 63 characters"
+		[ "$(printf '%s' "$u_ssid$u_key" | tr -d '\001-\037\177')" = "$u_ssid$u_key" ] \
+			|| die "control characters in the SSID or password"
+		case "$u_ssid" in
+			"$SSID"|"$STAFF_SSID") die "'$u_ssid' is this router's own network" ;;
+		esac
+		[ -n "$(wan_zone)" ] || die "no firewall zone named 'wan' on this router -- nothing to attach an uplink to"
+
+		if uplink_wifi && [ "$(uplink_get 1)" = "$u_ssid" ] && [ "$(uplink_get 2)" = "$u_key" ] && uplink_up; then
+			echo "uplink is already $(uplink_line)"
+			return 0
+		fi
+
+		# Look before touching anything. A name that is not on the air is a
+		# typo or a hotspot that is switched off, and either way the cheapest
+		# moment to say so is now, while both bands are still up.
+		#
+		# Two passes, keeping the better find, and only a first-choice find
+		# ends the search early. One pass can miss an AP that is there: seen
+		# on this router, a network on both bands answered on 2.4 GHz only,
+		# and settling for that moved a working 5 GHz uplink to the other
+		# radio and restarted both bands to do it.
+		echo "looking for '$u_ssid' -- both bands stutter for a few seconds while this scans"
+		u_pick=""
+		for u_try in 1 2; do
+			u_new=$(uplink_find "$u_ssid")
+			if [ -n "$u_new" ] && { [ -z "$u_pick" ] || [ "${u_new%% *}" -lt "${u_pick%% *}" ]; }; then
+				u_pick=$u_new
+			fi
+			[ "${u_pick%% *}" = 1 ] && break
+		done
+		[ -n "$u_pick" ] || die "no network named '$u_ssid' in range -- nothing changed.
+  The name must match exactly. An iPhone may stop advertising its hotspot
+  unless the Personal Hotspot screen is open, and its default name has a curly
+  apostrophe that is hard to type and may not match: give the phone a plain
+  name in Settings > General > About > Name."
+		u_rest=${u_pick#* }; u_radio=${u_rest%% *}
+		u_rest=${u_rest#* }; u_ch=${u_rest%% *}; u_seen=${u_rest#* }
+		u_band=$(band_of "$u_radio")
+		# iwinfo lists the key types a network offers. Anything that is not a
+		# shared password cannot be joined with one.
+		case "$u_seen" in
+		*SAE*PSK*|*PSK*SAE*) u_enc=sae-mixed ;;
+		*SAE*)               u_enc=sae ;;
+		*PSK*)               u_enc=psk2 ;;
+		*802.1[xX]*) die "'$u_ssid' wants a username as well as a password (802.1X) -- only shared-password networks can be an uplink. Nothing changed." ;;
+		*)           die "'$u_ssid' is open or uses legacy encryption ($u_seen) -- not usable as an uplink. Nothing changed." ;;
+		esac
+
+		# From here the radio restarts, and with it possibly the very session
+		# this was typed into. Finish regardless: half a switch with nobody
+		# left to undo it is the one outcome worth preventing.
+		trap '' HUP PIPE
+		rm -f "$UPLINK_PREV" "$UPLINK_MISS" "$UPLINK_NOTE"
+		[ -f "$UPLINK" ] && cp -p "$UPLINK" "$UPLINK_PREV"
+		( umask 077; printf '%s\n%s\n%s\n%s\n' "$u_ssid" "$u_key" "$u_radio" "$u_enc" > "$UPLINK" )
+		if [ -f "$UPLINK_PREV" ] && [ "$(sed -n 3p "$UPLINK_PREV")" != "$u_radio" ]; then
+			echo "joining on $u_band channel $u_ch -- the uplink changes radio, so $SSID and $STAFF_SSID drop on BOTH bands for a few seconds"
+		else
+			echo "joining on $u_band channel $u_ch -- $SSID and $STAFF_SSID drop on that band for a few seconds"
+		fi
+		[ "$u_ch" -ge 52 ] && [ "$u_ch" -le 144 ] \
+			&& echo "  note: channel $u_ch is a radar (DFS) channel; that band can take a minute or more to return"
+		# A subshell, so a `die` inside apply comes back here with the state
+		# file still to be put right, instead of exiting with it changed.
+		( cmd_apply >/dev/null ) || { uplink_restore; die "could not apply -- uplink unchanged"; }
+
+		# The pause is for a switch from one Wi-Fi uplink to another: netifd
+		# must have let go of the old lease before "up" can mean the new one.
+		sleep 3; u_n=3
+		while [ $u_n -lt 45 ] && ! uplink_up; do sleep 3; u_n=$((u_n + 3)); done
+		if ! uplink_up; then
+			if iw dev "$(uplink_sta)" link 2>/dev/null | grep -q '^Connected'; then
+				uplink_undo "joined '$u_ssid' but it gave this router no address"
+			fi
+			uplink_undo "could not join '$u_ssid' -- wrong password, or it went out of range"
+		fi
+
+		u_ip=$(uplink_st '@["ipv4-address"][0].address'); u_mask=$(uplink_st '@["ipv4-address"][0].mask')
+		u_dev=$(uplink_st '@.l3_device')
+		{ [ -n "$u_ip" ] && [ -n "$u_mask" ] && [ -n "$u_dev" ]; } \
+			|| uplink_undo "joined '$u_ssid' but could not read the address it gave"
+		# An upstream that numbers its clients out of one of OUR subnets cannot
+		# be routed to: the router would be looking for its own gateway on the
+		# wrong side of itself.
+		u_clash=""
+		overlaps "$u_ip" "$u_mask" "$CLASS_IP" 24 && u_clash="$SSID ($NET.0/24)"
+		overlaps "$u_ip" "$u_mask" "$STAFF_IP" 24 && u_clash="$STAFF_SSID ($STAFF_NET.0/24)"
+		u_lan=$(ubus call network.interface.lan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)
+		u_lanm=$(ubus call network.interface.lan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].mask' 2>/dev/null)
+		[ -n "$u_lan" ] && overlaps "$u_ip" "$u_mask" "$u_lan" "${u_lanm:-24}" \
+			&& u_clash="this router's own LAN ($u_lan/${u_lanm:-24})"
+		[ -z "$u_clash" ] || uplink_undo "'$u_ssid' hands out $u_ip/$u_mask, which collides with $u_clash"
+
+		# Through the uplink's own interface, so a cable still in the WAN port
+		# cannot answer on its behalf. The resolvers, because reaching them is
+		# exactly what the student network needs from an uplink.
+		u_net=0
+		for u_try in 1 2; do
+			for u_d in $UPSTREAM_DNS; do
+				ping -c 1 -W 3 -I "$u_dev" "$u_d" >/dev/null 2>&1 && { u_net=1; break 2; }
+			done
+		done
+		[ $u_net = 1 ] || uplink_undo "joined '$u_ssid' but nothing answers beyond it -- no Internet there, or a sign-in page in the way"
+
+		rm -f "$UPLINK_PREV"
+		echo "uplink is WIFI -- '$u_ssid' on $u_band channel $u_ch, address $u_ip"
+		echo "$SSID and $STAFF_SSID on $u_band now sit on that channel, and go off the air"
+		echo "whenever '$u_ssid' is out of reach. The other band does not depend on it."
+		if [ "$UPLINK_GIVEUP_MIN" -gt 0 ]; then
+			echo "Rejoined after a reboot; dropped for the wired port if it stays down $UPLINK_GIVEUP_MIN minutes."
+		else
+			echo "Rejoined after a reboot, and kept however long it stays down (UPLINK_GIVEUP_MIN=0)."
+		fi
+		[ "$(live_dev)" = "$u_dev" ] \
+			|| echo "note: a cable in the WAN port still carries the traffic -- pull it to move to '$u_ssid'."
+		echo "Back to the wired port with: classnet net ethernet" ;;
+	ethernet)
+		[ $# -eq 1 ] || die "usage: classnet net ethernet"
+		if uplink_wifi; then
+			trap '' HUP PIPE
+			u_ssid=$(uplink_get 1); u_band=$(band_of "$(uplink_get 3)")
+			rm -f "$UPLINK_PREV" "$UPLINK_MISS" "$UPLINK_NOTE"
+			cp -p "$UPLINK" "$UPLINK_PREV"; rm -f "$UPLINK"
+			( cmd_apply >/dev/null ) || { uplink_restore; die "could not apply -- uplink unchanged"; }
+			rm -f "$UPLINK_PREV"
+			echo "uplink is ETHERNET -- the wired WAN port. '$u_ssid' and its password are forgotten."
+			echo "$SSID and $STAFF_SSID on $u_band are back on their own channel."
+		else
+			rm -f "$UPLINK_NOTE"
+			echo "uplink is ETHERNET -- the wired WAN port (it already was)"
+		fi
+		[ -n "$(live_dev)" ] \
+			|| echo "note: nothing answers on the WAN port yet -- no Internet until a cable is in." ;;
+	check)
+		# The give-up rule, from cron every minute; says nothing unless it acts.
+		# A Wi-Fi uplink that is gone keeps one whole band of class Wi-Fi off
+		# the air for as long as the router keeps looking for it, so after
+		# UPLINK_GIVEUP_MIN minutes stop looking. It tests the link and not the
+		# Internet behind it: a hotspot that loses signal for a moment must not
+		# reconfigure the router. The count lives in /tmp, so a reboot starts
+		# it again and a cold start gets the whole allowance.
+		uplink_wifi || { rm -f "$UPLINK_MISS"; return 0; }
+		[ "$UPLINK_GIVEUP_MIN" -gt 0 ] || return 0
+		# a switch in progress is not an outage, and undoes itself if it fails
+		pgrep -f "classnet net wifi" >/dev/null 2>&1 && return 0
+		if uplink_up; then rm -f "$UPLINK_MISS"; return 0; fi
+		u_n=$(cat "$UPLINK_MISS" 2>/dev/null)
+		case "$u_n" in ''|*[!0-9]*) u_n=0 ;; esac
+		u_n=$((u_n + 1)); echo "$u_n" > "$UPLINK_MISS"
+		[ "$u_n" -ge "$UPLINK_GIVEUP_MIN" ] || return 0
+		u_ssid=$(uplink_get 1)
+		cp -p "$UPLINK" "$UPLINK_PREV"; rm -f "$UPLINK"
+		if ( cmd_apply >/dev/null 2>&1 ); then
+			rm -f "$UPLINK_PREV" "$UPLINK_MISS"
+			# No RTC, and the usual reason to be here is an uplink that never
+			# came up after a boot -- which is also why the clock never synced.
+			# A time off that clock would be a confident lie, so only give one
+			# that ntpd has confirmed (the flag classnet-schedule waits on).
+			u_at=""; [ -f /var/state/classnet-clock ] && u_at=" at $(date '+%H:%M')"
+			echo "Wi-Fi uplink '$u_ssid' was dropped$u_at after $u_n minutes down" > "$UPLINK_NOTE"
+			logger -t classnet "uplink: Wi-Fi '$u_ssid' down for $u_n minutes -- back to the wired WAN port"
+		else
+			# state and config must keep agreeing; the next minute tries again
+			uplink_restore
+			logger -t classnet "uplink: Wi-Fi '$u_ssid' down for $u_n minutes, but giving it up failed to apply"
+		fi ;;
+	# No argument is a question, as with gate and schedule.
+	"")
+		echo "uplink is $(uplink_line)"
+		if uplink_wifi && ! uplink_up; then
+			echo "  $SSID and $STAFF_SSID are off the air on $(band_of "$(uplink_get 3)") while it is not connected."
+			if [ "$UPLINK_GIVEUP_MIN" -gt 0 ]; then
+				echo "  It is dropped for the wired port after $UPLINK_GIVEUP_MIN minutes down; now: classnet net ethernet"
+			else
+				echo "  It is kept however long that lasts (UPLINK_GIVEUP_MIN=0); to stop: classnet net ethernet"
+			fi
+		fi
+		[ -f "$UPLINK_NOTE" ] && echo "  note: $(cat "$UPLINK_NOTE")"
+		u_dev=$(live_dev)
+		if [ -z "$u_dev" ]; then
+			echo "  no route to the Internet right now"
+		elif uplink_wifi && [ "$u_dev" = "$(uplink_st '@.l3_device')" ]; then
+			echo "  traffic leaves over the Wi-Fi uplink ($u_dev)"
+		else
+			echo "  traffic leaves over the wired WAN port ($u_dev)"
+		fi ;;
+	*)	die "usage: classnet net | net ethernet | net wifi <ssid> <password>" ;;
+	esac
+}
+
 cmd_log() {
 	if is_debug; then
 		echo "== names refused to students (config /var/etc/dnsmasq.conf.$C) =="
@@ -1339,6 +1729,9 @@ classnet -- CS 326 classroom network control
   classnet session status
   classnet schedule on|off         open the student SSID only during class periods
   classnet gate on|off             require registration before the allowlist applies
+  classnet net                     which uplink the class networks go out by
+  classnet net wifi <ssid> <password>   join an existing Wi-Fi and use it as the uplink
+  classnet net ethernet            back to the wired WAN port
   classnet register <MAC> <usf-email> <github> [name]     bind a device by hand
   classnet unregister <MAC>        send a device back to the portal
   classnet forget registrations|attendance|leases|all   clean slate
@@ -1354,6 +1747,7 @@ case "${1:-}" in
 	status) cmd_status ;; apply) cmd_apply ;;  test) cmd_test ;;
 	who) shift; cmd_who "$@" ;;   roster) shift; cmd_roster "$@" ;;
 	gate) shift; cmd_gate "$@" ;;
+	net) shift; cmd_net "$@" ;;
 	register) shift; cmd_register "$@" ;;
 	unregister) shift; cmd_unregister "$@" ;;
 	forget) shift; cmd_forget "$@" ;;

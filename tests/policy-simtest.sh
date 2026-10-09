@@ -163,10 +163,25 @@ ip -n $SNS link set lo up
 ip -n $SNS link set $SPEER up
 ip -n $SNS addr add $SIP/24 dev $SPEER
 ip -n $SNS route add default via $SGW
+mkdir -p /etc/netns/$SNS; echo "nameserver $SGW" > /etc/netns/$SNS/resolv.conf
 for a in $SGW 192.168.1.1; do
 	ssh_banner $SNS $a && ok "router ssh from the staff SSID at $a" \
 	                   || bad "router ssh from the staff SSID at $a"
 done
+
+echo "== the staff SSID reaches the Internet =="
+# Staff are not filtered, so one fetch is the whole assertion -- and the only
+# place the staff half of the uplink is exercised end to end. The router's own
+# fetch is the control again: it tells a broken staff path from an uplink that
+# is simply down, which matters most when the uplink is somebody's phone.
+if ip netns exec $SNS wget -q -T 10 -O /dev/null https://github.com/ 2>/dev/null; then
+	ok "github.com over https from the staff SSID"
+elif wget -q -T10 -O /dev/null https://github.com/ 2>/dev/null; then
+	bad "staff SSID has no Internet (the router itself does)"
+else
+	bad "no Internet from the router either -- the uplink is down, not the staff
+        policy. Check: classnet net"
+fi
 
 echo
 echo "$pass passed, $fail failed"

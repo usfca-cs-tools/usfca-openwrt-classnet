@@ -425,6 +425,10 @@ classnet enable | disable     # student SSID and its rules on/off
 classnet lock | unlock        # suspend the allowlist without dropping anyone
 classnet gate on | off        # require registration before the allowlist applies
 classnet schedule on | off    # SSID follows schedule.conf instead of staying up
+
+classnet net                  # which uplink both networks go out by
+classnet net wifi <ssid> <password>   # borrow an existing Wi-Fi as the uplink
+classnet net ethernet         # back to the wired WAN port
 ```
 
 `classnet who` prints the whole identity:
@@ -444,6 +448,55 @@ reads as a complete one.
 **`gate` ships off.** Turning it on cuts off every already-connected laptop
 until it registers, so it has to be a deliberate act, not something an install
 does to a live classroom.
+
+## Uplink over Wi-Fi
+
+A room with no working wall jack still has a phone in it. `classnet net wifi`
+joins an existing Wi-Fi as a client and sends both class networks out through
+it, with the allowlist, the gate and attendance exactly as they were:
+
+```sh
+ssh router 'classnet net wifi "greg-phone" "the-password"'
+ssh router 'classnet net'             # what is set, and what carries traffic now
+ssh router 'classnet net ethernet'    # back to the wired WAN port
+```
+
+It scans first and changes nothing if the name is not on the air. After
+joining it checks for an address and for the Internet beyond it, and puts the
+uplink back as it was if either is missing, so a wrong password costs one band
+about a minute rather than the afternoon.
+
+**One band depends on the uplink; the other never does.** A radio has one
+channel, and the client shares a radio with the class access points. They move
+to the upstream network's channel, and they are *off the air* whenever the
+client is not connected. That is why the client goes on one radio only: the
+other band keeps both SSIDs up whatever the uplink is doing, and is how you get
+back in. 5 GHz is preferred, for the capacity.
+
+**It gives up rather than leave a band dark.** The uplink is rejoined after a
+reboot. If it stays down for `UPLINK_GIVEUP_MIN` minutes (default 5), at boot
+or mid-class, the router returns to the wired port on its own, forgets the
+password, and says so in `classnet log` and `classnet net`. Set it to 0 to keep
+trying forever.
+
+**Switching mid-class is felt.** Everyone on the uplink's band drops for
+several seconds and rejoins, and connections in flight (a `git push`, a
+download) have to be retried. Addresses, registrations and attendance are not
+affected. A cable in the WAN port outranks the Wi-Fi uplink, which gives an
+order with no gap in it: going to Wi-Fi, join *before* pulling the cable; going
+back, plug the cable in *before* `classnet net ethernet`.
+
+What it cannot use:
+
+- **Networks that want a username** (eduroam and other 802.1X). Only a shared
+  password fits, which in practice means a phone hotspot or a home-style router.
+- **Networks with a sign-in page.** The router joins, finds no Internet, and
+  backs out.
+- **An upstream on the router's own subnets**, `192.168.1.0/24` most often. It
+  is detected and refused; change the router's LAN subnet if you need it.
+
+Give a phone a plain hotspot name first. An iPhone's default has a curly
+apostrophe in it, which is hard to type through `ssh` and may not match.
 
 ## Registration
 

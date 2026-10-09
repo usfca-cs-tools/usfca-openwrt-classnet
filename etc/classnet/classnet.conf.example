@@ -33,6 +33,14 @@ ZONENAME="America/Los_Angeles"
 # ---- Upstream resolvers, used for allowlisted names only -------------------
 UPSTREAM_DNS="1.1.1.1 9.9.9.9"
 
+# ---- Uplink over Wi-Fi -----------------------------------------------------
+# Only read while `classnet net wifi` is in effect. Minutes the Wi-Fi uplink may
+# stay down before the router gives up on it and goes back to the wired WAN
+# port. While it is down the class Wi-Fi on that band is off the air, so this
+# is how long one band may stay dark for the sake of an uplink that might come
+# back. 0 = never give up.
+UPLINK_GIVEUP_MIN="5"
+
 # ---- Who may register ------------------------------------------------------
 # Checked server-side against the Google account that signs in. Accepts the
 # domain and any subdomain, so usfca.edu admits dons.usfca.edu and cs.usfca.edu.
