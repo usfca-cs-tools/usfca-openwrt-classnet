@@ -401,6 +401,7 @@ profiles on in `PROFILES`. `core`, `github` and `site` are always on.
 | `cdn` | unpkg, jsdelivr, cdnjs, Google Fonts |
 | `portal` | captive-portal probes, so laptops stop claiming "no Internet" |
 | `chat` | *off* — a class chat server |
+| `canvas` | *off* — Canvas and USF sign-in, for handing back graded work |
 | `setup` | *off* — Homebrew and apt, for an install day |
 
 Write your own: copy `60-example.list.off` to `60-python.list`, add `python` to

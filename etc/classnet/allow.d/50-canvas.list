@@ -1,0 +1,43 @@
+# profile: canvas   -- OFF by default. Canvas, for a session that needs it:
+# handing back a graded exam, or a student checking a grade. Turn on with
+# `classnet profile enable canvas`, off again with `classnet profile disable canvas`.
+#
+# Canvas has an Inbox and discussions, so this profile opens a way for students
+# to message each other. Keep it off while students work on their own.
+#
+# Hosts found by tracing usfca.instructure.com from outside: the login page,
+# its redirect to sign-in, and the download of a comment's PDF attachment.
+# A course link signs in by way of sso.canvaslms.com, which /login does not.
+# sso. is named exactly: the canvaslms.com apex would admit the community forums.
+usfca.instructure.com
+sso.canvaslms.com                     # Canvas's sign-in relay (delegated_auth_pass_through), on the way to CAS
+canvadocs.instructure.com            # the inline document viewer (a PDF's preview)
+du11hjcvx0uqb.cloudfront.net          # Canvas's own JS, CSS and fonts; nothing renders without it
+instructure-uploads.s3.amazonaws.com  # the school's logo and theme files; the one bucket, not S3 at large
+canvas-user-content.com               # a file download starts at a per-file aNNNN.clusterNN. host here
+inscloudgate.net                      # ...and is handed to inst-fs-iad-prod. and cdn.inst-fs-iad-prod.
+
+# Canvas sends a signed-out laptop to USF's CAS. The CAS page loads nothing from
+# any other host, so the one name is enough; Duo answers if CAS asks for a
+# second factor. garden.list already carries both, but only for devices that
+# have not registered, and a student in class has.
+usfcas.usfca.edu
+duosecurity.com
+
+# The targets of the CNAMEs above, each by its exact name. A Mac caches a CNAME
+# and its target's A record separately; once the A record expires (60 s for
+# CAS's load balancer) it asks for the target by name, and a target that is not
+# allowed gets NXDOMAIN. Sign-in through CAS failed in class on 2026-10-22
+# without these. If one of them changes, `dig @1.1.1.1 <alias>` names the new
+# target.
+cas-prod-169846813.us-west-2.elb.amazonaws.com                         # usfcas.usfca.edu
+ae23d151f96c6e6fb.awsglobalaccelerator.com                             # sso.canvaslms.com
+canvadocs-prod-iad-m3ymlwyb7k-155017668.us-east-1.elb.amazonaws.com    # canvadocs.instructure.com
+s3-1-w.amazonaws.com                  # instructure-uploads.s3.amazonaws.com, then...
+s3-w.us-east-1.amazonaws.com          # ...this
+d3sskgxm7yyi0w.cloudfront.net         # aNNNN.clusterNN.canvas-user-content.com
+dzyvg4d46ly1y.cloudfront.net          # inst-fs-iad-prod.inscloudgate.net
+dppq4m4jupp04.cloudfront.net          # cdn.inst-fs-iad-prod.inscloudgate.net
+
+# Deliberately NOT included: sentry.insops.net (error reporting) and
+# www.instructure.com / help.instructure.com (marketing and help links).
